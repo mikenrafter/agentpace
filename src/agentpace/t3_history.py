@@ -61,7 +61,7 @@ def read_database(path, since=None, stats=None):
             if completed is not None and completed<=started: continue
             # Incomplete runs remain in the concurrency index, not completion training.
             row=lr.make_row(start=started,end=completed or started+1,model=selection.get('model',''),brief=brief,project=record.get('workspace_root') or '',session=record['thread_id'],source='t3-database')
-            row.update(run_id=record['run_id'],thread_id=record['thread_id'],ordinal=record['ordinal'],provider=record['provider'],execution_started=payload.get('startedAt') is not None,status=record['status'],requested_at=lr.epoch(record['requested_at']),prediction_at=started,label_source='t3-database',censor_reason='none' if record['status']=='completed' else record['status'],expect_s=None,expect_is_prerun=False,effort='unknown',delegated=record['thread_id'].startswith('thread:delegated-task:'),model_raw=str(selection.get('model') or ''))
+            row.update(run_id=record['run_id'],thread_id=record['thread_id'],ordinal=record['ordinal'],provider=record['provider'],execution_started=payload.get('startedAt') is not None,status=record['status'],requested_at=lr.epoch(record['requested_at']),prediction_at=started,label_source='t3-database',censor_reason='none' if record['status']=='completed' else record['status'],expect_s=None,expect_is_prerun=False,effort='unknown',delegated=record['thread_id'].startswith('thread:delegated-task:'),delegated_task_id=payload.get('delegatedTaskId') or None,model_raw=str(selection.get('model') or ''))
         except (ValueError,TypeError,KeyError,AttributeError):
             if stats is not None: stats['skipped_invalid']=stats.get('skipped_invalid',0)+1
             continue

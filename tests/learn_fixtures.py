@@ -56,7 +56,9 @@ def add_t3_run(
     effort: str | None = None,
     ordinal: int = 1,
     requested: float | None = None,
+    delegated_task_id: str | None = None,
 ) -> None:
+    """`delegated_task_id` is the follow-up task id T3 stores on a run started by t3_thread_send."""
     thread_id = thread_id or f"thread:delegated-task:{run_id}"  # a delegated agent run unless told otherwise
     connection = sqlite3.connect(path)
     payload = {
@@ -67,6 +69,8 @@ def add_t3_run(
     }
     if end is not None:
         payload["completedAt"] = iso(end)
+    if delegated_task_id is not None:
+        payload["delegatedTaskId"] = delegated_task_id
     connection.execute(
         "INSERT INTO orchestration_v2_projection_runs VALUES(?,?,?,?,?,?,?,?)",
         (run_id, thread_id, ordinal, provider, status, iso(requested if requested is not None else start), iso(end) if end else None, json.dumps(payload)),

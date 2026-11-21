@@ -11,6 +11,9 @@ are included, prompt text never is.
 
 Invariants:
 - Honest absence: a group with no estimate has `None` loss and coverage, never 0.
+- A hand-set ceiling (a vigil `--expect-s` with no estimator output behind it) is never a P80: it
+  is counted and scored apart (`ceiling`: how often the run finished within it), and is not in
+  `n_estimated`, loss or quantile coverage.
 - Usage-wait runs are counted by category but not scored: their duration is a provider wait,
   not an estimate error (the owner's labels exclude evidenced usage waits).
 - Windows are disjoint: `this` is `now - window < end <= now`; `previous` is `end <= now - window`.
@@ -85,6 +88,8 @@ def stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         with_q = [r for r in estimated if r["estimate"].get(name) is not None]
         hits = sum(r["actual_s"] <= r["estimate"][name] for r in with_q)
         coverage[name] = {"hits": hits, "n": len(with_q), "rate": hits / len(with_q) if with_q else None}
+    capped = [r for r in scored if r.get("ceiling_s")]
+    under = sum(r["actual_s"] <= r["ceiling_s"] for r in capped)
     mean_loss = statistics.fmean(_row_loss(r) for r in estimated) if estimated else None
     mean_actual = statistics.fmean(r["actual_s"] for r in estimated) if estimated else None
     return {
@@ -94,6 +99,7 @@ def stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "mean_pinball_s": mean_loss,
         "relative_loss": mean_loss / mean_actual if estimated and mean_actual else None,
         "coverage": coverage,
+        "ceiling": {"hits": under, "n": len(capped), "rate": under / len(capped) if capped else None},
     }
 
 
@@ -202,7 +208,13 @@ def calibrate(
             "window": len(in_window),
             "previous": len(earlier),
         },
-        "estimates": {"scored": sum(_scored(r) for r in in_window), "estimated": sum(_scored(r) and _estimated(r) for r in in_window)},
+        "estimates": {
+            "scored": sum(_scored(r) for r in in_window),
+            "estimated": sum(_scored(r) and _estimated(r) for r in in_window),
+            "ceiling": sum(_scored(r) and bool(r.get("ceiling_s")) and not _estimated(r) for r in in_window),
+            "linked_by_id": sum(_scored(r) and r.get("link_source") == "meta-run" and r.get("estimate_link") == "vigil-hold" for r in in_window),
+            "sources": dict(sorted(Counter(r["estimate_source"] for r in in_window if _scored(r) and r.get("estimate_source")).items())),
+        },
         # Each run once: a hold left unscored is not a second copy of the run it watched, and a
         # subagent nested in a delegated run is inside that run's time. Machine jobs and
         # check-ins are holds that are counted, apart, as what they are.
@@ -283,7 +295,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "Usage-wait runs are counted here and left out of every error figure below; so are orchestrator turns "
         "(main-thread T3 turns, which include owner waits), machine jobs and check-ins, which are not agent runs. "
-        f"{report['estimates']['estimated']} of {report['estimates']['scored']} scored runs this window had a dispatch estimate.",
+        f"{report['estimates']['estimated']} of {report['estimates']['scored']} scored runs this window had a dispatch estimate"
+        f" and {report['estimates'].get('ceiling', 0)} more only a hand-set ceiling.",
         "",
         "## Calibration by model and kind",
         "",
@@ -313,11 +326,27 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Vigil holds",
             "",
-            f"{holds.get('scored', 0)} holds watched exactly one run and their `expect_s` is scored against that run's actual "
-            f"(as its P80). Not scored: {unscored}. A hold's own open-to-done time is the orchestrator's wait, so it is never "
+            f"{holds.get('scored', 0)} holds watched exactly one run and their estimate (or hand-set ceiling) is scored against "
+            f"that run's actual; {report['estimates'].get('linked_by_id', 0)} of the runs were found by the id the orchestrator recorded. Not scored: {unscored}. A hold's own open-to-done time is the orchestrator's wait, so it is never "
             "an actual; `multi-run` holds covered several runs, `not-an-agent-run` are check-ins and machine jobs, and the "
             "other statuses could not be tied to one run.",
         ]
+    capped = [g for g in report["groups"] if g["this"].get("ceiling", {}).get("n") or g["previous"].get("ceiling", {}).get("n")]
+    lines += [
+        "",
+        "## Hand-set ceilings",
+        "",
+        "A ceiling is a `--expect-s` an orchestrator typed with no estimate behind it. It is a budget, not a P80, so it is "
+        "left out of every coverage and loss figure above; this table only says how often runs finished within it. A ceiling that "
+        "nearly every run meets is a loose alarm, not evidence of a good estimate.",
+        "",
+    ]
+    if capped:
+        lines += ["| model | kind | within ceiling (this) | within ceiling (earlier) |", "|---|---|---|---|"]
+        for g in capped:
+            lines.append(f"| {g['model']} | {g['kind']} | {_coverage(g['this']['ceiling'])} | {_coverage(g['previous']['ceiling'])} |")
+    else:
+        lines.append("None this window or before.")
     lines += ["", "## Drift flags", ""]
     flagged = [g for g in report["groups"] if g["flags"]]
     if flagged:

@@ -190,20 +190,25 @@ class T3Source(LearnCase):
 
 class VigilSource(LearnCase):
     def test_item_keeps_its_dispatch_estimate_and_label_provenance(self):
-        # why: the estimate at dispatch (vigil --expect-s, the run P80) is what calibration
-        #      scores; kind from meta beats a keyword guess and says so.
-        # catches: dropping expect_s, or labelling a keyword guess as explicit.
+        # why: the estimate at dispatch is what calibration scores; kind from meta beats a keyword
+        #      guess and says so. A hand-set --expect-s with no meta quantiles is a `ceiling` (kept,
+        #      but never a P80); the estimator's own p50/p80 in meta are the `agentpace` estimate.
+        # catches: dropping expect_s, scoring a ceiling as a P80, or labelling a keyword guess as explicit.
         self.ledger.write_text(
             fx.vigil_line("h1", "sol-build-thing", start=fx.T0, end=fx.T0 + 900, expect_s=1200, meta={"model": "sol", "kind": "implementation"})
             + fx.vigil_line("h2", "opus-review-diff", start=fx.T0, end=fx.T0 + 300)
+            + fx.vigil_line("h3", "sol-build-other", start=fx.T0, end=fx.T0 + 900, expect_s=1200, meta={"model": "sol", "kind": "implementation", "p50": "700", "p80": "1100"})
         )
         self.learn()
         rows = {r["pointers"]["vigil_label"]: r for r in self.store()}
         first, second = rows["sol-build-thing"], rows["opus-review-diff"]
-        self.assertEqual((first["estimate"]["p80"], first["estimate_source"], first["kind"], first["kind_source"]), (1200.0, "vigil-expect-s", "implementation", "vigil-meta"))
+        self.assertEqual((first["estimate"]["p80"], first["ceiling_s"], first["estimate_source"], first["kind"], first["kind_source"]), (None, 1200.0, "ceiling", "implementation", "vigil-meta"))
+        measured = rows["sol-build-other"]
+        self.assertEqual((measured["estimate"]["p50"], measured["estimate"]["p80"], measured["ceiling_s"], measured["estimate_source"]), (700.0, 1100.0, None, "agentpace"))
         self.assertEqual((first["model"], first["model_source"], first["label_source"]), ("sol", "vigil-meta", "vigil-hold"))
         self.assertEqual((second["kind"], second["kind_source"], second["model"], second["model_source"]), ("review", "label-keyword", "opus", "label-keyword"))
         self.assertIsNone(second["estimate"]["p80"])
+        self.assertIsNone(second["ceiling_s"])
         self.assertIsNone(second["estimate_source"])
         self.assertEqual(second["pointers"]["vigil_hold"], "h2")
 
@@ -266,17 +271,29 @@ class VigilLinks(LearnCase):
         # catches: scoring hold lifetimes, or counting the hold and its run twice.
         fx.write_orchestrator_transcript(self.claude, self.SESSION, fx.delegate(fx.T0, "c1", "R1", self.THREAD) + [fx.bash_hold(fx.T0 + 4, "sol-fix", 1200)])
         fx.add_t3_run(self.db, "R1", start=fx.T0 + 2, end=fx.T0 + 902, thread_id=self.THREAD, model="gpt-6.1-sol")
-        self.ledger.write_text(self.hold("sol-fix", start=fx.T0 + 5, end=fx.T0 + 2000, expect_s=1200))
+        self.ledger.write_text(self.hold("sol-fix", start=fx.T0 + 5, end=fx.T0 + 2000, expect_s=1200, meta={"p80": "1200"}))
         self.learn()
         (row,) = learn.collapse(self.store())
-        self.assertEqual((row["source"], row["actual_s"], row["estimate"]["p80"], row["estimate_source"]), ("t3-database", 900.0, 1200.0, "vigil-expect-s"))
+        self.assertEqual((row["source"], row["actual_s"], row["estimate"]["p80"], row["estimate_source"]), ("t3-database", 900.0, 1200.0, "agentpace"))
         self.assertEqual(row["pointers"]["vigil_label"], "sol-fix")
         report = calibration.calibrate(self.store(), now=fx.T0 + 10 * HOUR, window_s=7 * 86_400)
         self.assertEqual((report["estimates"]["estimated"], report["holds"]["scored"]), (1, 1))
 
+    def test_a_hand_set_ceiling_follows_its_hold_onto_the_run_without_becoming_a_p80(self):
+        # why: most holds carry only a typed --expect-s; linked to its run it is
+        #      still a ceiling, judged against the run's actual, never that run's P80.
+        # catches: the ceiling landing in estimate["p80"] when a transcript links the hold.
+        fx.write_orchestrator_transcript(self.claude, self.SESSION, fx.delegate(fx.T0, "c1", "R1", self.THREAD) + [fx.bash_hold(fx.T0 + 4, "sol-fix", 1200)])
+        fx.add_t3_run(self.db, "R1", start=fx.T0 + 2, end=fx.T0 + 902, thread_id=self.THREAD, model="gpt-6.1-sol")
+        self.ledger.write_text(self.hold("sol-fix", start=fx.T0 + 5, end=fx.T0 + 2000, expect_s=1200))
+        self.learn()
+        (row,) = learn.collapse(self.store())
+        self.assertEqual((row["source"], row["actual_s"], row["ceiling_s"], row["estimate"]["p80"], row["estimate_source"]), ("t3-database", 900.0, 1200.0, None, "ceiling"))
+        self.assertEqual(row["link_source"], "transcript")
+
     def test_plan_forecast_reaches_the_run_through_its_hold(self):
         # why: a plan task closed from a vigil item is the same execution; its P50 and the hold's
-        #      P80 both predicted the run the hold watched.
+        #      ceiling both belong to the run the hold watched (the ceiling stays a ceiling).
         # catches: losing the plan estimate (or its pointers) when the hold moves onto its run.
         fx.write_orchestrator_transcript(self.claude, self.SESSION, fx.delegate(fx.T0, "c1", "R1", self.THREAD) + [fx.bash_hold(fx.T0 + 4, "sol-task", 1200)])
         fx.add_t3_run(self.db, "R1", start=fx.T0 + 2, end=fx.T0 + 902, thread_id=self.THREAD, model="gpt-6.1-sol")
@@ -290,7 +307,7 @@ class VigilLinks(LearnCase):
         )
         self.learn()
         (row,) = learn.collapse(self.store())
-        self.assertEqual((row["source"], row["actual_s"], row["estimate"]["p50"], row["estimate"]["p80"]), ("t3-database", 900.0, 800.0, 1200.0))
+        self.assertEqual((row["source"], row["actual_s"], row["estimate"]["p50"], row["estimate"]["p80"], row["ceiling_s"]), ("t3-database", 900.0, 800.0, None, 1200.0))
         self.assertEqual((row["pointers"]["plan"], row["pointers"]["task"], row["pointers"]["run_id"]), (str(self.plans / "plan-a.json"), "t1", "R1"))
 
     def test_hold_spanning_several_runs_is_kept_unscored(self):
@@ -318,7 +335,7 @@ class VigilLinks(LearnCase):
         hold = fx.tool_use(fx.T0 + 3, "h1", "mcp__vigil__hold_add", {"watch_id": "W", "label": "opus-widget", "expect_s": 3600})
         fx.write_orchestrator_transcript(self.claude, self.SESSION, [call, result, hold])
         fx.write_claude_subagent(self.claude, "agent-abc123", start=fx.T0 + 2, end=fx.T0 + 1802, session=self.SESSION, model="claude-opus-5-5")
-        self.ledger.write_text(self.hold("opus-widget", start=fx.T0 + 3, end=fx.T0 + 4000, expect_s=3600))
+        self.ledger.write_text(self.hold("opus-widget", start=fx.T0 + 3, end=fx.T0 + 4000, expect_s=3600, meta={"p80": "3600"}))
         self.learn()
         (row,) = learn.collapse(self.store())
         self.assertEqual((row["source"], row["model"], row["actual_s"], row["estimate"]["p80"]), ("claude-subagent", "opus", 1800.0, 3600.0))
@@ -903,7 +920,7 @@ class CollapseAcrossSources(LearnCase):
 
     def test_vigil_item_and_its_plan_task_merge_their_estimates(self):
         # why: a plan task closed from the vigil ledger is the same execution as the ledger item;
-        #      merged, one row holds the plan P50 and the vigil P80.
+        #      merged, one row holds the plan P50 and the vigil ceiling.
         # catches: scoring the same run twice, or losing the P50 from the plan.
         start, end = fx.T0, fx.T0 + 900
         self.ledger.write_text(fx.vigil_line("h1", "sol-task", start=start, end=end, expect_s=1200, meta={"task": "plan-a/t1", "model": "sol", "kind": "implementation"}))
@@ -917,8 +934,8 @@ class CollapseAcrossSources(LearnCase):
         self.learn()
         self.assertEqual(len(self.store()), 2)
         (merged,) = learn.collapse(self.store())
-        self.assertEqual((merged["estimate"]["p50"], merged["estimate"]["p80"]), (800.0, 1200.0))
-        self.assertEqual(merged["estimate_source"], "plan-forecast+vigil-expect-s")
+        self.assertEqual((merged["estimate"]["p50"], merged["estimate"]["p80"], merged["ceiling_s"]), (800.0, None, 1200.0))
+        self.assertEqual(merged["estimate_source"], "ceiling+plan-forecast")
 
 
 class SmallGuards(LearnCase):
