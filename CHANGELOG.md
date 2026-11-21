@@ -7,11 +7,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Added
 
 - `agentpace usage-gaps` measures the wait between a run that ended on a provider usage limit and the later run that resumes the same work, from T3 (read-only), Claude and Codex history, with explicit-continuation, same-thread, same-session and weak same-project pairing.
+- `agentpace learn` ingests runs finished since its last cursor from the T3 database, the vigil ledger, Claude subagent and Codex transcripts and plan files into a local observation store (XDG state directory), idempotently and crash-safely, keeping each run's dispatch estimate, actual, model, kind, label sources and category.
+- `agentpace calibration --since 7d` reports estimate error and P50/P80/P90 coverage per model and kind against earlier weeks, new or thin models, the largest misses with pointers, and drift flags.
+- `estimate-run --learned` extends the replayed history with learned rows newer than it.
 
 ### Changed
 
+- `local_runs.model_name` matches model families by whole word (`console-1` is no longer Sol) and knows Fable and Neon; `kind_name` maps `impl` to `implementation`. learn, calibration and estimate-run share both.
 - `t3_history.read_database` and `usage_gap.load_t3_runs` take `since=` and filter in SQL; a row whose JSON does not parse is skipped. `hold_index` reads `H=$(vigil hold ...)` and, with `agents=True`, background Agent calls; `call_index` reads an Agent result's `agentId`.
-- `run_labels.claude_turns` no longer takes a turn's model from a `<synthetic>` API-error stub and marks a usage-limit stub as `usage-limit`; it starts a new turn at an `isMeta` user record (a coordinator message or system notification) that follows a finished turn, so a resumed subagent's idle gap is not counted as work.
+- `run_labels.claude_turns` no longer takes a turn's model from a `<synthetic>` API-error stub and marks a usage-limit stub as `usage-limit`; it starts a new turn at an `isMeta` user record (a coordinator message or system notification) that follows a finished turn, so a resumed subagent's idle gap is not counted as work. learn's store schema is 3; a schema-2 store is set aside and rebuilt.
+- learn: a vigil hold scores only a run that ended after the hold started (`target-ended-first` otherwise); a missing target is `target-cancelled` (T3 status cancelled, or a subagent transcript with no ended turn) or `link-failed`; a cursor with no stored rows is ignored and the store rebuilt. calibration counts each run once in its category line.
 
 ## 0.13.1 - 2026-11-10
 

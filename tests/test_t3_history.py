@@ -48,6 +48,28 @@ class HistoryTest(unittest.TestCase):
             links=history.hold_index([path])
         self.assertEqual(links[(str(path),5.0,'fix')][1],3.0)
 
+    def test_hold_in_a_command_substitution_is_indexed(self):
+        # why: the orchestrator often writes `H=$(vigil hold --for none ... | python3 ...)`; the
+        #      token `H=$(vigil` was not recognised, so those holds never linked to their run.
+        # catches: matching only a bare `vigil` token.
+        rows=[{'timestamp':1,'message':{'content':[{'type':'tool_use','id':'b','name':'t3_thread_send','input':{'threadId':'t','message':'go'}}]}}, {'timestamp':3,'message':{'content':[{'type':'tool_use','id':'h','name':'Bash','input':{'command':'H=$(vigil hold --for none --expect-s 3600 --label sol-x | python3 -c "print(1)")'}}]}}]
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'session.jsonl';path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            links=history.hold_index([path])
+        self.assertEqual(links[(str(path),3.0,'sol-x')][2],'b')
+
+    def test_agent_dispatch_is_indexed_only_when_asked(self):
+        # why: learn links holds to background Agent subagents; the frozen round-3 replay must
+        #      keep resetting at an Agent call.
+        # catches: changing the default behaviour that replay relies on.
+        rows=[{'timestamp':1,'message':{'content':[{'type':'tool_use','id':'a','name':'Agent','input':{'prompt':'x'}}]}}, {'timestamp':2,'toolUseResult':{'agentId':'abc'},'message':{'content':[{'type':'tool_result','tool_use_id':'a','content':'agentId: abc'}]}}, {'timestamp':3,'message':{'content':[{'type':'tool_use','id':'h','name':'mcp__vigil__hold_add','input':{'label':'x','expect_s':60}}]}}]
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'session.jsonl';path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            self.assertEqual(history.hold_index([path]),{})
+            links=history.hold_index([path],agents=True)
+            calls=history.call_index([path])
+        self.assertEqual(calls[links[(str(path),3.0,'x')]],[{'agentId':'abc'}])
+
     def test_pair_identity_includes_source_transcript(self):
         # why: copied Claude histories contain identical hold timestamps/estimates.
         # catches: joining an original row to a different transcript's copied hold.
@@ -81,6 +103,23 @@ class HistoryTest(unittest.TestCase):
             self.assertEqual(path.read_bytes(),before)
         self.assertEqual((rows[0]['actual_s'],rows[0]['model'],rows[0]['features']['items']),(20,'sol',1))
         self.assertNotIn('TOP_SECRET_BRIEF',json.dumps(rows))
+
+    def test_reading_since_a_time_keeps_concurrency_exact(self):
+        # why: learn reads T3 incrementally; the active_runs feature of a returned run must
+        #      still count runs that started before the window and overlap it.
+        # catches: filtering rows before computing concurrency, or no filter at all.
+        from tests import learn_fixtures as fx
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'state.sqlite';fx.make_t3_db(path)
+            fx.add_t3_run(path,'long',start=fx.T0+50,end=fx.T0+10_000)
+            fx.add_t3_run(path,'early',start=fx.T0,end=fx.T0+40)
+            fx.add_t3_run(path,'late',start=fx.T0+5_000,end=fx.T0+6_000)
+            fx.add_t3_run(path,'open',start=fx.T0+5_500,end=None,status='running')
+            full={r['run_id']:r for r in history.read_database(path)}
+            part={r['run_id']:r for r in history.read_database(path,since=fx.T0+5_900)}
+        self.assertNotIn('early',part)
+        self.assertEqual({k:part[k]['features']['active_runs'] for k in ('late','long')},{k:full[k]['features']['active_runs'] for k in ('late','long')})
+        self.assertEqual(part['late']['features']['active_runs'],1)
 
     def test_repeated_identical_tool_results_keep_one_identity(self):
         # why: Claude exports can repeat the same tool result in copied history.

@@ -19,6 +19,8 @@ agentpace [--version] <command> [options]
 | [`validate`](#validate) | Check data files |
 | [`site`](#site) | Refresh the data inside the static page |
 | [`claims`](#claims) | Tie numbers in documents to the data |
+| [`learn`](#learn) | Ingest runs finished since the last cursor into a local observation store |
+| [`calibration`](#calibration) | Estimates against actuals per model and kind, for a weekly review |
 
 ## Output and exit codes
 
@@ -599,3 +601,33 @@ excluded by `--strong-only`). Intermediate zero-progress limit retries collapse
 into one episode unless `--no-collapse` is passed. Gaps above `--max-gap-s`
 (default `43200`, 12 hours) are classified as `owner-away` and excluded from
 usage-wait P50/P80/P90 quantiles.
+
+## learn
+
+```text
+agentpace learn [--state DIR] [--t3-db PATH] [--vigil-ledger PATH] [--claude-projects DIR] [--codex-sessions DIR] [--plans DIR]... [--json]
+```
+
+Reads runs finished since the last cursor from every source and appends one observation per run to `observations.jsonl` in the state directory (`AGENTPACE_STATE`, else `$XDG_STATE_HOME/agentpace`, else `~/.local/state/agentpace`). Running it twice adds nothing. `cursor.json` holds a finished-time watermark for T3 and the ledger (re-read with a 6 h overlap) and per-file state (`mtime_ns`, size) for transcripts and plans; a file is recorded only after it parsed. The cursor moves only after the rows are written, so a crash loses and doubles nothing. A row whose content changed (a resumed subagent) is appended again and the later line wins. A store written by an older schema is moved aside (`observations.v1.jsonl`) and rebuilt from the sources; so is a cursor whose store has no rows. A subagent resumed by its parent (a coordinator message or a system notification after a finished turn) starts a new span, and its actual is the sum of its spans, never the idle time between them.
+
+| Source | Default location (override) | Read as |
+|---|---|---|
+| T3 database | `~/.t3/userdata/statev2.sqlite` (`AGENTPACE_T3_DB`) | Completed runs of every provider, Antigravity included, and runs that ended on a usage limit, with the estimator's features (effort, ordinal, concurrency, queue wait). Filtered by the cursor in SQL; opened `mode=ro`. A main-thread (non-delegated) turn is stored as `orchestrator-turn`. |
+| vigil item ledger | `$XDG_STATE_HOME/vigil/items.jsonl` (`AGENTPACE_VIGIL_LEDGER`) | Completed items, linked to the run the hold watched through the orchestrator's transcript (the hold registration, the dispatch before it, the run or subagent its result names). `expect_s` is scored as that run's P80 only when the hold covers exactly one run. Check-ins and owner waits are `checkin`; holds that name no model are `machine`. |
+| Claude subagent transcripts | `~/.claude/projects` (`AGENTPACE_CLAUDE_PROJECTS`) | One observation per subagent transcript; the actual is the sum of its turns, and API-error stubs are not work. A subagent inside a delegated T3 run is linked to it and not a second sample. |
+| Codex transcripts | `~/.codex/sessions` (`AGENTPACE_CODEX_SESSIONS`) | One run per completed turn; turns that ended on a usage limit are kept. |
+| Plan files | every `*.research/plans` beside the current directory's project (`AGENTPACE_PLAN_DIRS`, `os.pathsep` separated) | Done agent tasks; `forecast_s` is kept as the P50 estimate. |
+
+A missing source is reported as `absent`; a source that fails is reported as `error: <type>` and the others are still read; a bad file or row is skipped and counted. An observation holds the estimate at dispatch when one existed, the actual, model, kind, how the kind and model were labelled (`kind_source`, `model_source`), how the actual was measured (`label_source`), a category (`orchestrator-turn`, `machine`, `checkin`, then `usage-wait`, `over-12h`, `research`, `ordinary`, in that precedence), and pointers (thread id, transcript path, vigil hold and label, plan task). It never holds prompt text. The same run can appear in two sources; readers call `learn.collapse`, which drops a Codex transcript row that belongs to a T3 run, merges a vigil item with the plan task closed from it, moves a hold's estimate onto the one run it watched, and links subagents to their parent turn.
+
+`estimate-run --learned` adds learned agent-run samples that finished after the last row of `--data`, so fresh history reaches an estimate without replaying the whole history. Orchestrator turns, holds and nested subagents are never added.
+
+## calibration
+
+```text
+agentpace calibration [--since 7d] [--json | --md] [--out FILE] [--top N] [--state DIR] [--at TIME]
+```
+
+Reads the observation store and compares runs finished in the last `--since` window (`7d`, `12h`, `2w`) with everything earlier, per model and kind and per model overall: mean pinball loss of the estimates made at dispatch, coverage of P50/P80/P90 (the share of actuals at or under each estimate; targets 50/80/90), models and kinds with little history, the largest misses with pointers, and drift flags (`p80-undercoverage`, `loss-up`). Usage-wait runs, orchestrator turns, machine jobs and check-ins are counted and not scored, and so are vigil holds that could not be tied to exactly one run, or whose run had ended before the hold started (the report lists them by reason, `target-cancelled` apart from `link-failed`). A group with no estimate shows no loss, not zero. `--top` must be at least 1 and `--at` a finite time. The default output is Markdown; `--out` writes it to a file, owner-only (0600).
+
+The report is evidence for a reader. It never changes an estimator, and its flags are thresholds, not rules.

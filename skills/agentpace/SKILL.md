@@ -10,7 +10,8 @@ license: MIT
 **Produces** a persistent plan and a current commit / P50 / slip P80, with assumptions and owner decisions recorded.
 
 You are the primary caller. The owner sees the answer you relay. Use `--json`
-to consume state; relay the short text answer and any material limitations.
+to consume state; relay the short text answer and any material limitations. Give clock times in
+the owner's local time zone first, then UTC.
 For a deliverable, never give a single number without its median and slip line.
 Do not install or publish anything to obtain an estimate.
 
@@ -127,6 +128,16 @@ When making an explicit human-minutes guess, carry the literal
 `human_minutes: N` into the actual delegated brief before dispatch. A guess
 stored only in a plan or CLI argument is not automatically present in T3's run
 message and therefore will not become a historical training feature.
+
+## Keep history fresh and review the error
+
+`agentpace learn` ingests runs finished since its last cursor into a local observation store, so
+`estimate-run --learned` sees recent history without a full replay. Run it daily or before a batch
+of estimates; a second run adds nothing. `agentpace calibration --since 7d` shows where dispatch
+estimates missed by model and kind, with pointers to the runs. It is evidence for a human or a
+reviewing model to read; do not retune rules from it automatically. A vigil `--expect-s` is
+scored only when learn can tie the hold to one run: register each hold right after its own
+dispatch call, not several holds after a batch of dispatches.
 
 ## Separate usage-window waits from the work forecast
 

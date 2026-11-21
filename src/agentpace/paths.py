@@ -19,6 +19,18 @@ def home() -> Path:
     return Path(override) if override else Path.home() / ".agentpace"
 
 
+def state_dir() -> Path:
+    """Directory for learned observations and their cursor: outside the repo and `home()`.
+
+    `AGENTPACE_STATE` wins; otherwise `$XDG_STATE_HOME/agentpace`, then `~/.local/state/agentpace`.
+    """
+    override = os.environ.get("AGENTPACE_STATE")
+    if override:
+        return Path(override)
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "state") / "agentpace"
+
+
 def schema_file() -> Path:
     bundled = _PACKAGE / "_bundled" / "run.schema.json"
     return bundled if bundled.exists() else _REPO_ROOT / "schema" / "run.schema.json"

@@ -30,12 +30,60 @@ def identity(value):
     return hashlib.sha256(str(value).encode()).hexdigest()[:20]
 
 
+# Model families by whole word. Shared by every reader (learn, calibration, estimate-run) so a
+# learned row and a query name the same model. Extend as models arrive.
+MODEL_FAMILIES = ('haiku', 'sonnet', 'opus', 'fable', 'sol', 'neon', 'luna')
+_PROVIDER_WORDS = frozenset({'claude', 'gemini', 'gpt', 'antigravity', 'anthropic', 'openai', 'google'})
+_GENERIC_WORDS = frozenset({'default', 'pro', 'flash', 'mini', 'latest', 'preview', 'auto'})
+
+
+def _words(text):
+    return [w for w in re.split(r'[^a-z0-9.]+', str(text or '').lower()) if w]
+
+
+def model_word(text):
+    """The model family a free-form label names by whole word (`sol-parser-run` -> sol), else None."""
+    words = _words(text)
+    return next((name for name in MODEL_FAMILIES if name in words), 'codex' if 'codex' in words else None)
+
+
 def model_name(value):
-    value = value.lower()
-    for name in ('haiku', 'sonnet', 'opus', 'sol'):
-        if name in value:
-            return name
-    return 'codex' if 'gpt' in value or 'codex' in value else value or 'unknown'
+    """Family of a model id by whole word; idempotent (`model_name(model_name(x)) == model_name(x)`).
+
+    `claude-fable-5-2` -> fable, `gemini-4-neon` -> neon, `gpt-5.3-codex` -> codex, `console-1` ->
+    console (never sol). An id with no family keeps its first non-provider word, or itself.
+    """
+    lowered = str(value or '').lower().strip()
+    if not lowered:
+        return 'unknown'
+    words = _words(lowered)
+    family = next((name for name in MODEL_FAMILIES if name in words), None)
+    if family:
+        return family
+    if 'codex' in words or any(w == 'gpt' or re.fullmatch(r'gpt[\d.]+\w*', w) for w in words):
+        return 'codex'
+    rest = [w for w in words if w not in _PROVIDER_WORDS and not re.fullmatch(r'[\d.]+', w)]
+    if not rest or rest[0] in _GENERIC_WORDS:
+        return lowered
+    return rest[0]
+
+
+KINDS = ('review', 'fix', 'red', 'research', 'build', 'tests', 'implementation', 'other')
+KIND_ALIASES = {'impl': 'implementation', 'implement': 'implementation', 'test': 'tests', 'bugfix': 'fix', 'reviews': 'review'}
+
+
+def kind_name(value):
+    """An explicit kind, normalized: known kinds and their abbreviations (`impl`) map to the
+    keyword kind; any other explicit kind is kept as written, never guessed."""
+    lowered = str(value or '').strip().lower()
+    if not lowered:
+        return 'other'
+    return KIND_ALIASES.get(lowered, lowered)
+
+
+def normalize_rows(rows):
+    """Rows stored before the shared normalizer, relabelled with it (copies; inputs untouched)."""
+    return [dict(r, model=model_name(r.get('model')), kind=kind_name(r.get('kind'))) for r in rows]
 
 
 def task_kind(text):
@@ -90,7 +138,7 @@ def make_row(*, start, end, model='', kind=None, brief='', project='', session='
     start, end = epoch(start), epoch(end)
     if not math.isfinite(start+end) or end <= start:
         raise ValueError('run must have positive finite duration')
-    return dict(v=1, start=start, end=end, actual_s=end-start, model=model_name(model), kind=kind or task_kind(brief), project=identity(project), session=identity(session), features=extract_features(brief, cwd, base), machine_s=max(0, float(machine_s)), expect_s=expect_s, source=source)
+    return dict(v=1, start=start, end=end, actual_s=end-start, model=model_name(model), kind=kind_name(kind) if kind else task_kind(brief), project=identity(project), session=identity(session), features=extract_features(brief, cwd, base), machine_s=max(0, float(machine_s)), expect_s=expect_s, source=source)
 
 
 def json_lines(path):
@@ -104,28 +152,33 @@ def json_lines(path):
                 continue
 
 
+def ledger_row(r):
+    """One completed v1 vigil ledger item as a row (brief features, machine time, meta labels).
+    Raises ValueError, KeyError, TypeError, AttributeError or OSError for an item that is not one."""
+    if r['v'] != 1 or r.get('outcome') not in ('done','completed','success','exited'):
+        raise ValueError('not completed')
+    meta=r.get('meta') or {}
+    # Reject a brief file changed since the run started.
+    brief=''
+    brief_path=Path(meta['brief']) if meta.get('brief') else None
+    if brief_path and brief_path.is_file() and brief_path.stat().st_mtime <= epoch(r['started_at']):
+        brief=brief_path.read_text()
+    row=make_row(brief=brief,cwd=r.get('cwd'),base=meta.get('base'),start=r['started_at'], end=r['ended_at'], model=meta.get('model',''), kind=meta.get('kind') or task_kind(r['label']), project=r.get('cwd',''), session=r.get('session_id',''), expect_s=r.get('expect_s'), machine_s=float(meta.get('machine_s',0)), source='vigil-ledger')
+    row['id']=identity((r['hold'],r['label'],row['start']))
+    return row
+
+
 def read_ledger(path):
     rows, skipped, seen = [], 0, set()
     if not Path(path).exists():
         return rows, skipped
     for line in Path(path).read_text().splitlines():
         try:
-            r=json.loads(line)
-            if r['v'] != 1 or r.get('outcome') not in ('done','completed','success','exited'):
-                raise ValueError('not completed')
-            meta=r.get('meta') or {}
-            # Reject a brief file changed since the run started.
-            brief=''
-            brief_path=Path(meta['brief']) if meta.get('brief') else None
-            if brief_path and brief_path.is_file() and brief_path.stat().st_mtime <= epoch(r['started_at']):
-                brief=brief_path.read_text()
-            row=make_row(brief=brief,cwd=r.get('cwd'),base=meta.get('base'),start=r['started_at'], end=r['ended_at'], model=meta.get('model',''), kind=meta.get('kind') or task_kind(r['label']), project=r.get('cwd',''), session=r.get('session_id',''), expect_s=r.get('expect_s'), machine_s=float(meta.get('machine_s',0)), source='vigil-ledger')
-            key=(r['hold'],r['label'],row['start'])
-            if key in seen:
+            row=ledger_row(json.loads(line))
+            if row['id'] in seen:
                 continue
-            row['id']=identity(key)
-            seen.add(key); rows.append(row)
-        except (ValueError, KeyError, TypeError, AttributeError):
+            seen.add(row['id']); rows.append(row)
+        except (ValueError, KeyError, TypeError, AttributeError, OSError):
             skipped+=1
     return rows, skipped
 
@@ -349,7 +402,13 @@ def cmd_estimate_run(args):
     from agentpace import run_forecast as rf, run_labels as labels, machine_timings as mt
     cwd=str(Path(args.cwd).resolve())
     from agentpace import research
-    rows=research.deduplicate(list(json_lines(args.data)))
+    rows=list(json_lines(args.data))
+    if args.learned:
+        # The replayed rows hold everything up to their last end; the learned tail extends them.
+        from agentpace import learn
+        rows+=learn.reference_rows(paths.state_dir(),after=max((r['end'] for r in rows if r.get('end')),default=0))
+    # Rows replayed before the shared normalizer hold raw ids (`claude-fable-5-2`, `impl`).
+    rows=research.deduplicate(normalize_rows(rows))
     brief=Path(args.brief).read_text() if args.brief else ''
     machine=0
     observed=[]
@@ -367,7 +426,9 @@ def cmd_estimate_run(args):
     if mode=='quantile':
         from agentpace import quantiles as qt
         query=qt.annotate(query,brief,delegated=not args.root_run,ordinal=args.ordinal,effort=args.effort,active_runs=args.active_runs,human_minutes=args.human_minutes)
-        if Path(args.data).resolve()!=(paths.home()/'local-runs.jsonl').resolve():
+        # The fitted artifact holds its own training rows; other --data, or learned history on
+        # top of it, must be refitted (or referenced) from the rows actually read.
+        if args.learned or Path(args.data).resolve()!=(paths.home()/'local-runs.jsonl').resolve():
             artifact=qt.load_runtime()
             query['_quantile_model']=dict(reference=rows,drop=[]) if 'reference' in artifact else qt.fit(rows,**artifact['settings'])
     pairs=rf.distribution(rows,query,mode)
@@ -413,6 +474,7 @@ def add_commands(commands):
     parser.add_argument('--cwd',default='.')
     parser.add_argument('--machine',help='exact project timing label')
     parser.add_argument('--data',default=str(paths.home()/'local-runs.jsonl'))
+    parser.add_argument('--learned',action='store_true',help='add history learned since the replayed rows (agentpace learn)')
     parser.add_argument('--timings',default=str(paths.home()/'machine-times.jsonl'))
     parser.add_argument('--expect-s',action='store_true',help='print P80 seconds as one integer')
     parser.add_argument('--json',action='store_true')

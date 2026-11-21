@@ -673,11 +673,13 @@ def build_parser() -> argparse.ArgumentParser:
     from agentpace import deliverable
 
     deliverable.add_command(commands)
-    from agentpace import plan_state, machine_timings, usage_gap
+    from agentpace import calibration, learn, plan_state, machine_timings, usage_gap
 
     plan_state.add_commands(commands)
     machine_timings.add_commands(commands)
     usage_gap.add_command(commands)
+    learn.add_command(commands)
+    calibration.add_command(commands)
 
     ingest_cmd = commands.add_parser("ingest", help="read local agent history into rows")
     ingest_cmd.add_argument("path", nargs="?", help="history folder (default: the harness's own)")
