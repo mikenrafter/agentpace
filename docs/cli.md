@@ -391,9 +391,25 @@ Call before dispatch; mid-run pass the measured elapsed seconds.
 agentpace estimate-run --model sol --kind implementation --brief task.md --cwd /repo --json
 agentpace estimate-run --model sol --kind implementation --elapsed 300 --json
 agentpace estimate-run --model sol --kind implementation --expect-s
+agentpace estimate-run --model sol --kind implementation --vigil-meta
 ```
 
 `--expect-s` prints only one integer, run P80 seconds, for vigil's overdue alarm.
+`--vigil-meta` prints one line to append to `vigil hold add`:
+`--expect-s <P80> --meta p50=<s> --meta p80=<s> --meta est=agentpace-<version> --meta model=<m> --meta kind=<k>`
+(model and kind as learn stores them: `gemini-4-neon` is `neon`, `impl` is `implementation`).
+A value with whitespace or a glob character is refused (exit 2): the line is expanded unquoted, where quotes do not help.
+Dispatch first, then register the hold with that line and `--meta run=<id>`. For a T3 delegate the id is its
+`taskId` (what `delegate_task` or `t3_thread_send` returned: exact, one run). The `childRunId` is exact too; the
+`childThreadId` also works but names every run on the thread, so the hold's window picks the run (see `learn`).
+For a Claude background agent it is the `agentId`; for Codex, the session id:
+
+```sh
+vigil hold add "$HOLD" --for none --label sol-fix $(agentpace estimate-run --model sol --kind implementation --vigil-meta) --meta run=<taskId>
+```
+
+`learn` scores the `p50`/`p80` the hold carries as the run's estimate and finds the run by `run`, not by
+label and time. It cannot be combined with `--json` or `--expect-s`.
 `--json` returns P50/P80/P90, method, derived features, machine term, row count
 and elapsed time. `--elapsed SECONDS` conditions on survival, not subtraction
 from an unconditional median. `support` counts historical survivors;
@@ -613,7 +629,7 @@ Reads runs finished since the last cursor from every source and appends one obse
 | Source | Default location (override) | Read as |
 |---|---|---|
 | T3 database | `~/.t3/userdata/statev2.sqlite` (`AGENTPACE_T3_DB`) | Completed runs of every provider, Antigravity included, and runs that ended on a usage limit, with the estimator's features (effort, ordinal, concurrency, queue wait). Filtered by the cursor in SQL; opened `mode=ro`. A main-thread (non-delegated) turn is stored as `orchestrator-turn`. |
-| vigil item ledger | `$XDG_STATE_HOME/vigil/items.jsonl` (`AGENTPACE_VIGIL_LEDGER`) | Completed items, linked to the run the hold watched through the orchestrator's transcript (the hold registration, the dispatch before it, the run or subagent its result names). `expect_s` is scored as that run's P80 only when the hold covers exactly one run. Check-ins and owner waits are `checkin`; holds that name no model are `machine`. |
+| vigil item ledger | `$XDG_STATE_HOME/vigil/items.jsonl` (`AGENTPACE_VIGIL_LEDGER`) | Completed items, linked to the run the hold watched through the orchestrator's transcript (the hold registration, the dispatch before it, the run or subagent its result names). A hold with `--meta run=<id>` is linked to that run by id alone (a T3 run id, child thread id, task id or follow-up task id, url-encoded or not; a Claude background-agent id; or a Codex session id) before any transcript, label or time is looked at, and the label never makes it a check-in or machine job. A thread id names every run on the thread: the hold claims the one run that overlaps it and started no earlier than 15 minutes before it, however many runs the thread has; a cancelled, failed or interrupted run that the hold also watched makes it `multi-run`. Any other id is exact: it names one run, and the hold may have opened late (a hold that opened after its run ended is `target-ended-first` and claims nothing). A taskId names the run its `delegate_task` or `t3_thread_send` call started, never a later run T3 started on its own. An id that matches nothing is `link-failed`, not guessed; a hold that found its run but carries no estimate or ceiling is `linked-no-estimate`. A hold carrying the estimator's `--meta p50`/`p80` is scored as that estimate (`estimate_source` `agentpace`); a hand-set `--expect-s` without them is a `ceiling`, kept apart and never scored as a P80. Either is scored against the run only when the hold watched exactly one run: a thread id that spans two is `multi-run`, an exact id is that run. Check-ins and owner waits are `checkin`; holds that name no model are `machine`. |
 | Claude subagent transcripts | `~/.claude/projects` (`AGENTPACE_CLAUDE_PROJECTS`) | One observation per subagent transcript; the actual is the sum of its turns, and API-error stubs are not work. A subagent inside a delegated T3 run is linked to it and not a second sample. |
 | Codex transcripts | `~/.codex/sessions` (`AGENTPACE_CODEX_SESSIONS`) | One run per completed turn; turns that ended on a usage limit are kept. |
 | Plan files | every `*.research/plans` beside the current directory's project (`AGENTPACE_PLAN_DIRS`, `os.pathsep` separated) | Done agent tasks; `forecast_s` is kept as the P50 estimate. |
@@ -628,6 +644,6 @@ A missing source is reported as `absent`; a source that fails is reported as `er
 agentpace calibration [--since 7d] [--json | --md] [--out FILE] [--top N] [--state DIR] [--at TIME]
 ```
 
-Reads the observation store and compares runs finished in the last `--since` window (`7d`, `12h`, `2w`) with everything earlier, per model and kind and per model overall: mean pinball loss of the estimates made at dispatch, coverage of P50/P80/P90 (the share of actuals at or under each estimate; targets 50/80/90), models and kinds with little history, the largest misses with pointers, and drift flags (`p80-undercoverage`, `loss-up`). Usage-wait runs, orchestrator turns, machine jobs and check-ins are counted and not scored, and so are vigil holds that could not be tied to exactly one run, or whose run had ended before the hold started (the report lists them by reason, `target-cancelled` apart from `link-failed`). A group with no estimate shows no loss, not zero. `--top` must be at least 1 and `--at` a finite time. The default output is Markdown; `--out` writes it to a file, owner-only (0600).
+Reads the observation store and compares runs finished in the last `--since` window (`7d`, `12h`, `2w`) with everything earlier, per model and kind and per model overall: mean pinball loss of the estimates made at dispatch, coverage of P50/P80/P90 (the share of actuals at or under each estimate; targets 50/80/90), models and kinds with little history, the largest misses with pointers, and drift flags (`p80-undercoverage`, `loss-up`). Usage-wait runs, orchestrator turns, machine jobs and check-ins are counted and not scored, and so are vigil holds that could not be tied to exactly one run, or whose run had ended before the hold started (the report lists them by reason, `target-cancelled` apart from `link-failed`). A group with no estimate shows no loss, not zero. A hand-set ceiling (a `--expect-s` with no estimator output behind it) is never in those figures: the report counts it (`estimates.ceiling`) and its own section says how often runs finished within it (`ceiling` in each group's stats), because a loose alarm that every run meets is not a calibrated P80. `--top` must be at least 1 and `--at` a finite time. The default output is Markdown; `--out` writes it to a file, owner-only (0600).
 
 The report is evidence for a reader. It never changes an estimator, and its flags are thresholds, not rules.

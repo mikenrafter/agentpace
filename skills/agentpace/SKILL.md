@@ -37,16 +37,25 @@ machine `what` key and `host`. Keep queue/remote transfer/review rounds explicit
 The configured agent cap defaults to one; dependencies alone do not authorize
 extra agents.
 
-Before dispatch, record a task start. Link its vigil item with
-`--meta task=<plan-id>/<task-id>`, plus model/kind metadata. Use the task's
-run P80 as vigil's `--expect-s`; the deliverable commitment cut is a different
-number and must not be used as the overdue alarm.
+Before dispatch, record a task start. Dispatch, then register the hold with the
+estimator's own flags and the id of the run you just started. The task's run P80
+is vigil's `--expect-s`; the deliverable commitment cut is a different number
+and must not be used as the overdue alarm.
 
 ```sh
 agentpace plan start <plan> <task> --json
-agentpace estimate-run --model sol --kind implementation --brief <brief> --json
+# dispatch (delegate_task, Agent, codex); keep its taskId (delegate_task or t3_thread_send result; a childThreadId also works but is windowed; Agent: agentId; Codex: session id)
+vigil hold add <hold> --for none --label <run> \
+  $(agentpace estimate-run --model sol --kind implementation --brief <brief> --vigil-meta) \
+  --meta run=<taskId> --meta task=<plan-id>/<task-id>
 agentpace plan done <plan> <task> --took <measured-seconds> --json
 ```
+
+`--vigil-meta` prints `--expect-s <P80> --meta p50=<s> --meta p80=<s> --meta est=agentpace-<version>
+--meta model=<m> --meta kind=<k>`. `learn` scores the `p50`/`p80` as the run's estimate and finds the
+run by `run`, exactly, not by label and time. Without `run` a hold is linked through the
+orchestrator's transcript, which cannot see a `$(...)` flag. A hand-typed `--expect-s` with no
+`p50`/`p80` is only a ceiling: calibration reports it apart and never as P80 coverage.
 
 Vigil completed ledger items close linked tasks automatically on `eta`, or
 explicitly through `plan sync`. A transcript-backed run end can still differ
@@ -135,9 +144,9 @@ message and therefore will not become a historical training feature.
 `estimate-run --learned` sees recent history without a full replay. Run it daily or before a batch
 of estimates; a second run adds nothing. `agentpace calibration --since 7d` shows where dispatch
 estimates missed by model and kind, with pointers to the runs. It is evidence for a human or a
-reviewing model to read; do not retune rules from it automatically. A vigil `--expect-s` is
-scored only when learn can tie the hold to one run: register each hold right after its own
-dispatch call, not several holds after a batch of dispatches.
+reviewing model to read; do not retune rules from it automatically. A hold is scored only when
+learn can tie it to one run: `--meta run=<id>` does that exactly. Without it, register each hold right after
+its own dispatch call, not several holds after a batch of dispatches.
 
 ## Separate usage-window waits from the work forecast
 

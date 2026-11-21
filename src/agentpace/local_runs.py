@@ -12,6 +12,7 @@ import math
 import re
 import statistics
 import subprocess
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -397,8 +398,41 @@ def machine_time(records,label,cwd):
     return statistics.median(matches)
 
 
+# The line is expanded unquoted in `$(...)`, where quotes are literal: a value must be one word
+# that no shell splits or globs.
+_SHELL_WORD=re.compile(r'[A-Za-z0-9._+@%/:=-]+')
+
+
+def unsplittable(model, kind):
+    """The --model/--kind name that `vigil_meta_line` would refuse, or None."""
+    for flag,value in (('model',model_name(model)),('kind',kind_name(kind))):
+        if not _SHELL_WORD.fullmatch(str(value)):
+            return f'--{flag} {value!r}'
+    return None
+
+
+def vigil_meta_line(result, model, kind):
+    """The flags that go after `vigil hold add ...` so learn can score the run against the
+    estimator's own quantiles: the P80 as the overdue alarm, both quantiles, and the labels.
+    Names are normalized as learn stores them; the version says which estimator spoke."""
+    from agentpace import __version__
+    seconds=lambda value: math.ceil(value-1e-9)
+    flags=[('--expect-s',seconds(result['p80']))]
+    for key,value in (('p50',seconds(result['p50'])),('p80',seconds(result['p80'])),('est',f'agentpace-{__version__}'),('model',model_name(model)),('kind',kind_name(kind))):
+        if not _SHELL_WORD.fullmatch(str(value)):
+            raise ValueError(f'--{key} {value!r} would not stay one word in $(...)')
+        flags+=[('--meta',f'{key}={value}')]
+    return ' '.join(f'{flag} {value}' for flag,value in flags)
+
+
 def cmd_estimate_run(args):
     from time import time
+    if args.vigil_meta and (args.json or args.expect_s):
+        print('agentpace: --vigil-meta prints its own line; do not combine it with --json or --expect-s',file=sys.stderr)
+        return 2
+    if args.vigil_meta and unsplittable(args.model,args.kind):
+        print(f'agentpace: {unsplittable(args.model,args.kind)} has a character the shell would split or glob in $(...); use one word such as code-review',file=sys.stderr)
+        return 2
     from agentpace import run_forecast as rf, run_labels as labels, machine_timings as mt
     cwd=str(Path(args.cwd).resolve())
     from agentpace import research
@@ -453,7 +487,10 @@ def cmd_estimate_run(args):
         result['research_history']=research.history(rows)
         result['confidence']='low'
         result['warning']=research.warning(result['research_history'])
-    if args.expect_s:
+    if args.vigil_meta:
+        if not result['reliable']: print(result['warning'],file=sys.stderr)
+        print(vigil_meta_line(result,args.model,args.kind))
+    elif args.expect_s:
         print(math.ceil(result['p80']-1e-9))
     elif args.json:
         print(json.dumps(result,indent=2))
@@ -477,6 +514,7 @@ def add_commands(commands):
     parser.add_argument('--learned',action='store_true',help='add history learned since the replayed rows (agentpace learn)')
     parser.add_argument('--timings',default=str(paths.home()/'machine-times.jsonl'))
     parser.add_argument('--expect-s',action='store_true',help='print P80 seconds as one integer')
+    parser.add_argument('--vigil-meta',action='store_true',help='print the flags to append to `vigil hold add` (P80 alarm and the estimate as meta)')
     parser.add_argument('--json',action='store_true')
     parser.add_argument('--elapsed',type=float,default=0)
     parser.add_argument('--human-minutes',type=float)
