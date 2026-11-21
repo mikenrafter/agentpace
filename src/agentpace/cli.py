@@ -667,6 +667,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"agentpace {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+    from agentpace import local_runs
+
+    local_runs.add_commands(commands)
+    from agentpace import deliverable
+
+    deliverable.add_command(commands)
+    from agentpace import plan_state, machine_timings
+
+    plan_state.add_commands(commands)
+    machine_timings.add_commands(commands)
 
     ingest_cmd = commands.add_parser("ingest", help="read local agent history into rows")
     ingest_cmd.add_argument("path", nargs="?", help="history folder (default: the harness's own)")

@@ -1,5 +1,26 @@
 # agentpace
 
+## Local ETA fork
+
+This is a fork of [mohamedzhioua/agentpace](https://github.com/mohamedzhioua/agentpace).
+It adds agent-facing plan ETAs, local execution labels, a vigil ledger reader,
+and an explicit reliability flag for research tasks. Plan state tracks what is
+done, running and still to do. Local history stays on your machine; no private
+training rows or fitted models ship with this fork. Research totals are
+illustrative rather than firm commitments.
+
+From this checkout:
+
+```bash
+PYTHONPATH=src python3 -m agentpace --help
+```
+
+Install with `python -m pip install .`. For local commands and
+configuration, see [the CLI guide](docs/cli.md#estimate-run) and
+[the agent manual](skills/agentpace/SKILL.md). The sections below describe the
+upstream commands and public seed dataset. MIT code licensing and the upstream
+copyright are unchanged; the bundled upstream data retains its own license.
+
 **Stop estimating agent work in human weeks.** agentpace answers "how long will this take?" from measured agent runs: a P50/P80/P90 range, with the human part (review, testing, decisions) stated on its own line and never derived from agent time.
 
 ![A speech bubble, dashed and fading, holds a wall calendar shedding blank pages. Beside it a solid stopwatch, its hand a terminal cursor, is measured by two small cursor robots with a tape measure.](https://raw.githubusercontent.com/mohamedzhioua/agentpace/main/docs/assets/hero.webp)

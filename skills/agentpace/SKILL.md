@@ -1,83 +1,157 @@
 ---
 name: agentpace
-description: Estimates how long software work will take when coding agents do it, from measured agent runs, as P50/P80/P90 ranges with a critical path and the human part stated separately. Use whenever anyone asks how long software work will take, a feature, a fix, a plan, a roadmap or a task list, even when agents are not mentioned, and whenever a timeline is quoted in days, weeks or months. Assume agents do the implementation unless told otherwise. Not for non-software work.
+description: Maintain a coding-agent deliverable plan, answer ETA questions from current task state, record machine timings, and connect vigil completions to plan tasks. Use for ETA to APK, PR, build or another concrete coding deliverable, including mid-run ETA updates.
 license: MIT
-compatibility: Requires Python 3.10+ and the agentpace CLI. No network access is needed at run time.
 ---
 
 # agentpace
 
-**Use when** someone asks how long software work will take, or quotes a timeline in days, weeks or months for work agents will do.
+**Use when** the owner asks for an ETA, scope changes, or a run or machine task starts or finishes.
+**Produces** a persistent plan and a current commit / P50 / slip P80, with assumptions and owner decisions recorded.
 
-**Produces** a measured P50/P80/P90 range with its critical path, the human part on its own line, and any quoted timeline shown beside it as unverified.
+You are the primary caller. The owner sees the answer you relay. Use `--json`
+to consume state; relay the short text answer and any material limitations.
+For a deliverable, never give a single number without its median and slip line.
+Do not install or publish anything to obtain an estimate.
 
-Answer "how long will this take?" with measured ranges from real agent runs, and state the human part on its own. Do not quote human-team timelines, and never give a single number.
+## Keep one plan per deliverable
 
-This skill triggers on natural-language questions. `/pace-estimate` (`/agentpace:pace-estimate` when installed as a Claude Code plugin) is the explicit command for a given plan.
+Choose an explicit plan identity and location such as
+`<project>.research/plans/<deliverable>.json`. Reuse it through the deliverable,
+including follow-up review rounds and scope changes. An unrelated plan in the
+folder is not evidence that it describes the request.
 
-## Check the tool
-
-Run `agentpace --version`. If that fails, show the install command below and stop there: installing is the user's call, so do not install anything without being asked. If they would rather not install it, answer from [assets/portable-prompt.md](assets/portable-prompt.md) and label the result a rule of thumb.
-
-```text
-uv tool install agentpace
+```sh
+agentpace plan init <plan> --from <declared-plan.json> --json
+agentpace eta <plan> --json
 ```
 
-## Estimate
+A declared plan has `id`, `cwd`, optional `deliverable`, and `tasks`. Each task
+has `id`, `type` (`agent`, `machine`, or `wait`), and `depends_on` for sequencing.
+Agent tasks name `model`, `kind`, and optionally `brief`, `human_minutes`,
+`effort`, and `verifiable`. Human minutes is an explicit difficulty guess,
+not a conversion of agent estimates. Do not invent a historical human guess.
+Machine/wait tasks use measured or stated `seconds` plus `basis`, or a recorded
+machine `what` key and `host`. Keep queue/remote transfer/review rounds explicit.
+The configured agent cap defaults to one; dependencies alone do not authorize
+extra agents.
 
-1. Assume agents do the implementation unless the user says otherwise. If it is unclear and the answer would change, ask once.
-2. Break the work into tasks an agent would run as separate runs.
-3. Give each task an `id` and a `kind`, plus `depends_on` when it must wait for another task. Set `model` to the model that will run it when you know it, and `agent_cap` to the number of agents that will run at once. Leave `risk` out, except for research (below).
-4. Write the plan to a new file and run the estimator on that file. Use an existing plan file instead only when the user names it or this conversation has already made it the plan for this work. A file that just happens to be in the folder, `plan.json` included, is not evidence that it describes the request: never estimate it as the answer and never overwrite it. If it might be the plan they mean, ask which to use before running anything. In the commands below, `<file>` is the file you wrote, or the one the user named.
+Before dispatch, record a task start. Link its vigil item with
+`--meta task=<plan-id>/<task-id>`, plus model/kind metadata. Use the task's
+run P80 as vigil's `--expect-s`; the deliverable commitment cut is a different
+number and must not be used as the overdue alarm.
 
-```json
-{
-  "agent_cap": 3,
-  "model": "claude-opus-5-5",
-  "tasks": [
-    { "id": "survey", "kind": "other", "risk": "low" },
-    { "id": "schema", "kind": "feature", "depends_on": ["survey"] },
-    { "id": "api", "kind": "feature", "depends_on": ["schema"] },
-    { "id": "review", "kind": "review", "depends_on": ["api"] }
-  ]
-}
+```sh
+agentpace plan start <plan> <task> --json
+agentpace estimate-run --model sol --kind implementation --brief <brief> --json
+agentpace plan done <plan> <task> --took <measured-seconds> --json
 ```
 
-```text
-agentpace estimate <file>
+Vigil completed ledger items close linked tasks automatically on `eta`, or
+explicitly through `plan sync`. A transcript-backed run end can still differ
+from the orchestrator's hold-done time; inspect the label-source flag when
+judging forecast quality. Do not mark an incomplete or paused task done to
+improve the score.
+
+## Answer the remainder, and record changes
+
+```sh
+agentpace plan add <plan> <new-task> --model opus --kind review --depends-on <previous> --json
+agentpace plan scope <plan> --remove <task> --reason '<actual scope decision>' --json
+agentpace eta <plan> --json
 ```
 
-- Kinds: `feature`, `bugfix`, `refactor`, `migration`, `tests`, `docs`, `review`, `other`, as the data records them: `feature` is implementation work of any kind, `review` a read-only review, `other` anything else.
-- Risk: leave it out. In the rows it is the agent's role, not how hard or how reversible the work is, so `high` buys nothing, and the output says when a written risk was not used. The one exception is research: `other` with `risk: low`, a recorded cell.
-- Model: set `model` whenever you know which model will run the task; it is the strongest split in the data.
-- `bugfix`, `refactor` and `migration` have few or no seed runs: an estimate with them leans on broader runs, up to all runs, and says so; pass that on rather than relabel the work.
+Done tasks retain their actuals. Running tasks condition on `started_at` and
+elapsed time. Todo tasks use fresh distributions. Every issued ETA records
+the effective plan snapshot. `extrapolated=true` means the running task has
+outlasted empirical support; tell the owner rather than hiding the weak tail.
+`what_would_change_it` names uncertainties worth checking before relaying ETA.
+The short text command is suitable for the owner; state every assumed
+trade-off and its ETA saving, added risk and spending. A miss of `target_s`
+remains a miss unless the owner changes scope or authorizes a policy change.
 
-## Re-answer a human quote
+After the deliverable actually lands, close or explicitly remove remaining
+tasks, then run `agentpace plan deliver <plan> --json`. This scores every ETA
+issued for that deliverable against its actual remaining time.
 
-When the conversation already holds a timeline in days, weeks or months, from the user, a document or an earlier answer, estimate the plan anyway, and pass the quote verbatim, in the words it was given:
+## Owner decisions, risk and spending
 
-```text
-agentpace estimate <file> --quoted "3 months"
+Appetite layers are user default, inferred kind/type, project/deliverable,
+plan, and task. Commit follows task cuts through the plan; P50 and P80 are
+simulated whole-plan remainders. Inspect each task's resolved policy.
+A request above configured appetite returns `needs_owner: true` and keeps the
+configured cut. Ask the owner and wait for the answer before applying it.
+
+High-cost accelerators are suggestions only. They include fast/ultra modes,
+extra agents beyond the cap, large or additional remote sandboxes and idle sandbox
+time. Catalogue `cost` states `class` (`none`, `low`, `high`) and spend such as
+`tokens`, `usage_window_pct`, or `sandbox_hours`. Their output includes
+`needs_owner: true`, ETA gain and `available_with`. A flag alone is insufficient:
+use `--allow-spend <name> --owner-grant '<verbatim owner authorization>'` only
+when that authorization was actually given, or use an owner-edited config
+grant. Never invent, paraphrase into permission, or self-author a grant.
+The quote and timestamp are logged. This is an auditable attestation, not
+cryptographic proof of the speaker; local files remain in the owner's trust
+boundary. Keep an authorized shortcut explicit in `--apply` as well.
+
+Max reasoning effort is not a speed lever. It is excluded from the time-saving
+catalogue. Its observed duration effect is confounded by task selection and
+must not be interpreted as causal acceleration.
+
+## Record machine time, not another TIMINGS estimate
+
+```sh
+agentpace record start --project <cwd> --what suite:full --host <host-class> --json
+agentpace record stop --id <returned-id> --json
+agentpace record --project <cwd> --what build:apk --host <host-class> --took <seconds> --json
+agentpace timings show --project <cwd> --json
 ```
 
-The output then has a `Quoted:` line under the total, marking the quote as calendar time, as quoted and unverified. Relay that line as printed, beside the measured range, and leave the two side by side: the measured range is the plan total on the session clock, and the human part stays on its own line. Never convert the quote into agent time, never compare it with the range or give a ratio or difference between them, and never say what the quote counts or call the difference the human part: nothing has checked the quote, and that would derive the human part from the agent time.
+Capture `--n-tests`, `--n-files`, `--contention` and `--note` when known.
+Records live in `<project>.research/timings.jsonl` with a local index. Import
+old notes with `agentpace timings import <TIMINGS.md> --json`; keep originals,
+inspect parse diagnostics, and do not pool unknown host/cache conditions as
+though they were one measured distribution. Rows needing review are excluded
+from automatic machine lookup. Human waits must have a stated basis; do not
+derive an unmeasured human part by subtracting agent time from a guess.
 
-If the user wants to see later which number held, offer the same command with `--record` added. Once the work is done, `agentpace score <id> --session <ref>` compares both with what the agents actually took.
+## Optional local models
 
-## Report the result
+Use only locally fitted earlier labels; no private model or run history ships.
+Set AGENTPACE_HOME for a separate store, AGENTPACE_T3_DB for a different read-only
+T3 database, and AGENTPACE_VIGIL_LEDGER for the ledger path. Quantiles require a
+locally trained model and remain experimental. Use a time-split held-out test
+before claiming accuracy. Interpolated support is not historical run counts.
 
-- Start the answer with one fenced code block, tagged `text`, holding the CLI's own lines copied character for character: the `Plan total on the session clock:` line, the `Quoted:` line as printed when there is one, the `Idle cap:` line as printed when there is one, the session-clock line and the human part line, the `Review capacity:` line as printed when there is one, and the whole `Warnings:` block, heading included, when the output has one. Nothing inside the block is reworded, shortened, merged, rounded or re-ordered; whatever you want to say about a line goes below the block. Recommend P80 for planning.
-- Pass on the session-clock line and the human part line as the CLI prints them. The first says that gaps between runs count toward the total up to the idle cap, so short waits on the user sit inside it. So below the block, name the numbers as the CLI does, "the plan total on the session clock" or "the P80 on the session clock", with the CLI's value and unit, and never as hours of agent time, active time, working time or effort. When you say what the total or its P80 covers, say what the session-clock line says: agent runs and the gaps between them, each gap up to the idle cap. Never say it is, or covers, agent time or agent work only, not even to set it against the human part. For what it leaves out, say what the human part line says; that line's own words, "the agent time", stay inside the block. Unmeasured, the human part line says no allowance for review, testing, decisions and waiting between agent turns is added. Measured by `agentpace turns`, it quotes the user's own wait per human turn, from their local history. Either way, do not derive a number for it from the total, and do not multiply the per-turn wait by a guessed number of turns. If the user gives their own figure, repeat it and label it as theirs.
-- If the user states their review capacity, such as "4 PRs a day", pass it verbatim with `--review-capacity "<figure>"`, relay the `Review capacity:` line as printed, and never turn it into a timeline. Pass the figure itself, not the sentence around it, in at most 80 characters; if it does not fit, leave the flag off and repeat the user's figure as theirs beside the result.
-- When the block has an `Idle cap:` line, it says which idle cap the rows behind the range were clipped at, and whether they share one clock. Pass it on as printed; do not explain it away, and do not rename, delete or edit anything in `~/.agentpace` because of it unless the user asks. If the CLI refuses instead of answering, with one line starting `agentpace:`, relay that line as printed and stop: no range, and no retry with other flags.
-- Name the critical path and the effective parallelism.
-- Pass every warning on, as printed. One names a cell with no or few recorded runs and says what the range could not use (the kind, the risk level or the model) and where it leaned instead; one says a written risk or size was not used; one says parallelism was assumed.
-- Do not state a single number, even when pressed. If someone needs one figure to plan around, give the P80 and call it the P80.
+When making an explicit human-minutes guess, carry the literal
+`human_minutes: N` into the actual delegated brief before dispatch. A guess
+stored only in a plan or CLI argument is not automatically present in T3's run
+message and therefore will not become a historical training feature.
 
-## Limits to state when they matter
+## Separate usage-window waits from the work forecast
 
-- The seed data is one person's workflow, so it may not resemble the user's. `agentpace ingest` pools the user's own runs with it; `--data ~/.agentpace/runs.jsonl` uses only theirs. The Gemini CLI, OpenCode and Cline adapters are experimental, not yet verified on real sessions, so say so when an estimate leans on rows from them.
-- Without reading prompts, metadata cannot separate features from bug fixes or refactors, so those kinds may share data.
-- `size` is ignored unless `--use-size` is passed, because stored size is measured after a run. Do not pass it unless the user asks.
+Read `separate_risks` on run JSON and `tasks[].separate_risks` on ETA JSON.
+Relay the usage-reset line separately from commit/P50/slip. The main labels
+exclude only evidenced usage-window waits; owner questions, approvals and other
+pauses remain in the duration. Do not subtract a quiet gap merely because a
+shorter label would improve the score.
 
-See [references/method.md](references/method.md) for how the estimate works.
+Pass `--budget-remaining-pct` on estimate-run, or `budget_remaining_pct` on the
+plan task, only when that dispatch snapshot was recorded. Missing history uses
+an earlier base rate. Check `severity_identified`: null conditional/expected
+wait length means it is unknown. Without positive observations, wait length is unknown. State that rather than
+inventing a reset time. Optional wait models must not block the main ETA.
+The over_12h risk is per run, not a deliverable-wide probability.
+
+## Research has no reliable duration signal yet
+
+For kind=research, read `reliable: false`, `research_history` and the warning.
+State the historical P50/P90, and say that research is low-confidence. No reliable general duration signal has been established.
+
+If an ETA lists `unbounded_tasks`, its totals are illustrative.
+`commit_is_actionable: false` means you must not promise that numeric cut to the
+owner. State which research remains, keep its historical range visible, and
+update the plan as it completes. Done/removed research does not make the
+remaining timeline unbounded. Preserve the warning when relaying the ETA;
+never silently convert it into a confident deadline. vigil's P80 integer is
+still an overdue alarm, not a research commitment.

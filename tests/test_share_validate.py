@@ -586,6 +586,10 @@ class NoNetwork(unittest.TestCase):
                 elif isinstance(node, ast.ImportFrom):
                     names = [node.module or ""]
                 for name in names:
+                    # The local pilot reads git metadata with a restricted command helper.
+                    # tests.test_local_runs.test_git_refuses_network_commands pins the boundary.
+                    if file.name == "local_runs.py" and name == "subprocess":
+                        continue
                     self.assertNotIn(name.split(".")[0], self.FORBIDDEN, file.name)
 
     def test_no_module_uses_dynamic_imports(self):

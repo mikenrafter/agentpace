@@ -60,3 +60,23 @@ def labels_file() -> Path:
 
 def cache_file(adapter: str) -> Path:
     return home() / f"cache-{adapter}.json"
+
+
+def t3_database() -> Path:
+    return Path(os.environ.get('AGENTPACE_T3_DB', str(Path.home()/'.t3/userdata/statev2.sqlite'))).expanduser()
+
+
+def vigil_ledger() -> Path:
+    return Path(os.environ.get('AGENTPACE_VIGIL_LEDGER', str(Path.home()/'.local/state/vigil/items.jsonl'))).expanduser()
+
+
+def codex_sessions() -> Path:
+    return Path(os.environ.get('AGENTPACE_CODEX_SESSIONS', str(Path.home()/'.codex/sessions'))).expanduser()
+
+
+def claude_projects() -> Path:
+    return Path(os.environ.get('AGENTPACE_CLAUDE_PROJECTS', str(Path.home()/'.claude/projects'))).expanduser()
+
+
+def clock_timezone() -> str:
+    return os.environ.get('AGENTPACE_TIMEZONE', 'UTC')

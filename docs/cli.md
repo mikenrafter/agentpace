@@ -379,3 +379,205 @@ Rewrites every number between claim markers (`<!-- claim:name -->...<!-- /claim 
 | `--data PATH` | the seed data | A rows file or folder. Repeatable. |
 | `--report` | `docs/backtest.json` | The backtest report the numbers come from. |
 | `--check` | off | Write nothing; exit 1 if any number is stale. |
+
+## estimate-run
+
+Agent-facing run distribution, used internally by deliverable ETAs and vigil.
+Call before dispatch; mid-run pass the measured elapsed seconds.
+
+```text
+agentpace estimate-run --model sol --kind implementation --brief task.md --cwd /repo --json
+agentpace estimate-run --model sol --kind implementation --elapsed 300 --json
+agentpace estimate-run --model sol --kind implementation --expect-s
+```
+
+`--expect-s` prints only one integer, run P80 seconds, for vigil's overdue alarm.
+`--json` returns P50/P80/P90, method, derived features, machine term, row count
+and elapsed time. `--elapsed SECONDS` conditions on survival, not subtraction
+from an unconditional median. `support` counts historical survivors;
+`extrapolated: true` marks elapsed times beyond empirical support. Tell the
+owner when that weakens the estimate.
+
+`--expect SECONDS` supplies an estimate actually issued before the run, for
+calibration against the reference class. Never invent one from the answer
+being predicted. `--human-minutes` is an explicit human-difficulty guess, not a
+renamed agent estimate. `--effort`, `--session`, `--host`, `--machine`, `--data`
+and `--timings` supply their corresponding context. `--method` is for declared
+experiments; live defaults use the train-selected `~/.agentpace/model-policy.json`.
+The rows default to `~/.agentpace/local-runs.jsonl`. No public seed rows enter.
+
+## eta
+
+The primary user is the agent. Answer the owner's ETA to APK/PR from the
+persistent deliverable plan, not a new guessed task list on every ask.
+
+```text
+agentpace eta /project.research/plans/pilot.json --json
+agentpace eta /project.research/plans/pilot.json
+```
+
+Tasks have `status` of `todo`, `running`, `done`, or `removed`. Running tasks
+need `started_at`; done tasks retain `actual_s` and start/end. Scope events keep
+added/removed task identities and timestamps. Todo tasks use normal forecasts;
+running tasks use conditional remaining distributions; completed work is fixed.
+`commit`, `p50`, `p80` are remaining seconds from issue time. `total_p50` and
+`total_p80` include elapsed wall time since the plan started; `actual_work_s`
+sums known done task durations, which can overlap. JSON includes resolved
+per-task appetite, `needs_owner`, tail support, assumed shortcuts,
+`available_spend`, configured `agent_cap` and `what_would_change_it`.
+
+Every ETA is logged with a snapshot and timestamp. `eta` automatically syncs
+vigil ledger completions first. Older ad-hoc plan files get a companion
+`.state.json`; use that file or explicit `plan init` for subsequent state changes.
+`--now` supplies an explicit replay timestamp; omit for live work. `--ledger`
+overrides the completed-items ledger for replay/testing. `--json` is stable
+structured output; the text form is short enough to relay to the owner.
+
+Policy layers are user default, inferred kind/type, configured project,
+configured deliverable, plan, task. Settings live in
+`~/.config/agentpace/config.json`, with `risk_appetite`, `commit_quantile`,
+`agent_cap`, `projects` keyed by absolute cwd, `deliverables` keyed by type,
+and an optional owner-edited `allow_spend` list. Conservative/balanced/aggressive
+map to P50/P40/P30. A numeric cut must be above zero and at most 0.5. The composed
+commit follows task cuts through dependencies; it is not a whole-plan quantile.
+Whole-plan P50/P80 use shared residual ranks and list scheduling under the cap.
+
+`--risk-appetite`, `--commit-quantile`, and `--task-risk ID=APPETITE` request
+overrides. A cut more aggressive than the configured/inferred layer requires
+an owner grant; otherwise JSON marks `needs_owner: true` and retains the baseline.
+`--owner-grant '<verbatim owner quote>'` logs the authorization and timestamp.
+The agent must not invent a quote or treat a vague reply as permission. Local
+quote logging is an auditable attestation, not cryptographic speaker proof.
+
+Catalogue entries declare `id`, `task`, replacement `seconds`, `savings_s`,
+`basis`, added `risk`, optional `protects`, and `cost`. A cost object has `class`
+(`none`, `low`, `high`) and concrete spend such as `tokens`, `usage_window_pct`
+or `sandbox_hours`. Entries without cost default to none for old local plans.
+`--apply ID` selects a declared shortcut. `--keep NAME` and `--no-defer TASK`
+block corresponding shortcuts; no undeclared work is removed. `target_s`
+reports a miss when the unchanged plan cannot fit.
+
+High-cost options stay suggestions unless requested with `--allow-spend NAME`
+and authorized by an actual owner quote or owner-edited config. A flag alone
+is not authority. JSON marks suggestions `needs_owner: true`, gives their ETA
+gain and cost, and text shows `available with --allow-spend NAME`. Fast/ultra
+modes, extra parallel agents beyond the cap, large or extra remote sandboxes and idle
+sandbox time must be high cost. Extra-agent entries use
+`mechanism: extra-agents` and `agent_cap`; they remain suggestable by default.
+Max reasoning effort is not a speed lever and is rejected as an accelerator.
+Historical effort effects are descriptive, confounded comparisons.
+
+Parallel machine tasks need actual resources; the cap governs agent tasks,
+not host scheduling. Model uncertainty, changing scope and unknown machine
+contention remain limitations. Relay every applied trade-off and spending
+suggestion to the owner. Never silently apply one to make a promised ETA fit.
+
+## plan
+
+Maintain one file per deliverable as work progresses. Every subcommand has
+`--json`; `--at` supplies an explicit epoch or ISO timestamp for replay.
+
+```text
+agentpace plan init PLAN --from DECLARED_PLAN.json --json
+agentpace plan add PLAN review2 --model opus --kind review --depends-on implement --json
+agentpace plan start PLAN implement --json
+agentpace plan done PLAN implement --took 120 --json
+agentpace plan scope PLAN --remove stretch --reason 'Owner deferred to next build' --json
+agentpace plan sync PLAN --json
+agentpace plan deliver PLAN --json
+agentpace plan show PLAN --json
+```
+
+`init` accepts `--cwd` without a source file. `add` accepts `--task-json` or task
+flags including `--type`, `--seconds`, `--basis`, and repeated `--depends-on`.
+`scope --add-json` adds a declared task; removal preserves its identity and
+records the timestamp and reason. `start` refuses unfinished dependencies.
+`done` needs a prior start or measured `--took`. Completed tasks are idempotent.
+
+Put `--meta task=<plan-id>/<task-id>` on the vigil item. `sync` and `eta` close
+linked successful items from `~/.local/state/vigil/items.jsonl`, preserving
+ledger times and avoiding duplicate events. Unknown plan/task links are ignored.
+`--ledger` on `sync` selects an explicit replay fixture. Agent and machine rows
+still retain whether actuals came from a transcript or hold completion.
+
+`deliver` refuses open tasks. Once closed/removed, it records delivery and scores
+every issued ETA against actual remaining time, including coverage and pinball
+loss. Forecasts retain their issued scope snapshot even if scope later changed.
+The outcome is immutable on repeated `deliver` calls.
+
+## record
+
+Record observed machine work instead of writing a new free-text TIMINGS row.
+All forms have `--json`.
+
+```text
+agentpace record start --project /repo --what suite:full --host laptop --json
+agentpace record stop --id RETURNED_ID --json
+agentpace record --project /repo --what build:apk --host remote:4cpu --took 120 --json
+```
+
+Capture normalized `--what`, `--host` or sandbox class, optional `--n-tests`,
+`--n-files`, `--contention`, and `--note`. One-shot `--took` is measured seconds.
+Records include start/end and live in `<project>.research/timings.jsonl`, indexed
+by `~/.agentpace/timings-index.json`. `--out` overrides the project store.
+Unknown timing ids are refused; start/stop state lives locally. Machine lookup
+uses uncontended, reviewed project/key/host observations, not estimate prose.
+
+## timings
+
+Import old notes once and inspect parse diagnostics before trusting their
+machine classes. Every form has `--json`.
+
+```text
+agentpace timings import /repo.research/TIMINGS.md --json
+agentpace timings show --project /repo --json
+```
+
+`import` accepts `--project` and `--out`, is idempotent by source-line identity,
+and leaves the original Markdown untouched. Only observed Took/Actual columns
+are imported; ranges, killed jobs, unsupported prose and mixed agent/machine
+tasks are flagged in `timings-import.json`. Unknown-host rows need review and
+are excluded from automatic machine lookup. `show` groups by project, normalized
+key, host, contention and review flag, showing n and P50/P80/P90 seconds.
+
+### Optional models and local configuration
+
+Local-estimator files honor `AGENTPACE_HOME` (default `~/.agentpace`).
+`--data`, `--timings`, `--config` and `--ledger` override individual inputs.
+`AGENTPACE_T3_DB` defaults to `~/.t3/userdata/statev2.sqlite`; the database is
+always opened read-only. Session readers accept root arguments; defaults can
+also be set with `AGENTPACE_CODEX_SESSIONS` and `AGENTPACE_CLAUDE_PROJECTS`.
+`AGENTPACE_VIGIL_LEDGER` defaults to `~/.local/state/vigil/items.jsonl`.
+`AGENTPACE_TIMEZONE` defaults to UTC for diagnostic overnight-gap classification.
+Other named zones require a system zoneinfo database or Python tzdata.
+
+No local labels or fitted models ship. Use `experiments/local_pilot.py --pairs
+<export.json> --timing <TIMINGS.md> --report <report.json>` to derive local rows;
+`--timing` is repeatable and no sibling projects are scanned automatically.
+`experiments/deliverable_replay.py --input <private-asks.json> --rows <rows.jsonl>
+--out <report.json>` loads replay inputs externally. Each input has asked_at,
+actual_s and the pre-ask plan. Results only use earlier complete source sessions.
+Private reports and replay inputs must stay outside this repository.
+
+Direct quantiles are experimental: set model_file in model-policy.json to a
+locally fitted artifact (default quantile-model.json), and select --method
+quantile. Fit via agentpace.quantiles.fit on your earlier derived rows and save
+the returned object as JSON. Retain a time-split holdout for evaluation.
+The default method is ridge unless a local model-policy.json specifies another
+method. Empty local history is an error, not a fallback to an invented ETA.
+Interpolated quantile support is not a count of historical surviving runs.
+
+### Wait risks and research reliability
+
+Optional usage-model.json and long-risk.json contain separately fitted local
+risk models. Missing or invalid optional models never block the main forecast.
+Read separate_risks on run JSON and tasks[].separate_risks on ETA JSON. Unknown
+conditional wait durations are null; never infer a zero-hour reset from no
+observations. Supply --budget-remaining-pct only for a measured dispatch snapshot.
+Only evidenced usage resets are trimmed from main labels; other pauses remain.
+
+Research forecasts return reliable=false and their historical P50/P90. Plans
+with remaining research list unbounded_tasks and commit_is_actionable=false;
+quantiles remain illustrative and deadline_met is unknown. Relay that warning
+to the owner. Done/removed research does not lower remaining-plan confidence.
+No general research-duration reliability has been established.

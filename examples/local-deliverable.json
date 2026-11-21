@@ -1,0 +1,40 @@
+{
+  "deliverable": "pilot build",
+  "cwd": ".",
+  "tasks": [
+    {
+      "id": "implement",
+      "model": "sol",
+      "kind": "implementation"
+    },
+    {
+      "id": "review",
+      "model": "opus",
+      "kind": "review",
+      "depends_on": [
+        "implement"
+      ]
+    },
+    {
+      "id": "suite",
+      "type": "machine",
+      "seconds": 120,
+      "basis": "Synthetic example only; replace with a measured suite duration",
+      "depends_on": [
+        "review"
+      ],
+      "risk_appetite": "conservative"
+    },
+    {
+      "id": "build",
+      "type": "machine",
+      "seconds": 60,
+      "basis": "Synthetic example only; replace with a measured build duration",
+      "depends_on": [
+        "suite"
+      ],
+      "risk_appetite": "conservative"
+    }
+  ],
+  "apply": []
+}
