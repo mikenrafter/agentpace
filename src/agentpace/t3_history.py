@@ -12,7 +12,21 @@ from pathlib import Path
 from agentpace import local_runs as lr, paths
 
 
-def read_database(path):
+# Runs that finished at or after `since`, plus every run that may overlap one of them (still
+# open, or finished after the earliest request among them), so `active_runs` stays exact.
+_SINCE_FILTER = """
+    WHERE r.completed_at IS NULL OR julianday(r.completed_at) >= (
+        SELECT min(julianday(requested_at)) FROM orchestration_v2_projection_runs
+        WHERE completed_at IS NOT NULL AND julianday(completed_at) >= julianday(?, 'unixepoch'))
+"""
+
+
+def read_database(path, since=None, stats=None):
+    """Derived T3 run rows. With `since` (epoch), only runs that finished at or after it and the
+    runs overlapping them are read, so an incremental caller never parses old history.
+
+    A row whose JSON does not parse is skipped and counted in `stats['skipped_invalid']`.
+    """
     import sqlite3
     connection=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=2)
     try:
@@ -24,31 +38,36 @@ def read_database(path):
                    m.payload_json AS message_json,p.workspace_root
             FROM orchestration_v2_projection_runs r
             LEFT JOIN orchestration_v2_projection_messages m
-              ON m.message_id=json_extract(r.payload_json,'$.userMessageId')
+              ON m.message_id=json_extract(CASE WHEN json_valid(r.payload_json) THEN r.payload_json END,'$.userMessageId')
             LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id=r.thread_id
             LEFT JOIN projection_projects p ON p.project_id=t.project_id
-        ''')]
+        '''+(_SINCE_FILTER if since is not None else ''),(since,) if since is not None else ())]
     finally:
         connection.close()
     rows=[]
+    from agentpace.quantiles import WORDS
     for record in records:
-        payload=json.loads(record.pop('payload_json'))
-        message=json.loads(record.pop('message_json') or '{}')
-        brief=message.get('text','')
-        selection=payload.get('modelSelection') or {}
-        start=payload.get('startedAt') or record['requested_at']
-        end=payload.get('completedAt') or record['completed_at']
-        if not start: continue
-        started=lr.epoch(start)
-        completed=lr.epoch(end) if end else None
-        if completed is not None and completed<=started: continue
-        # Incomplete runs remain in the concurrency index, not completion training.
-        row=lr.make_row(start=started,end=completed or started+1,model=selection.get('model',''),brief=brief,project=record.get('workspace_root') or '',session=record['thread_id'],source='t3-database')
-        row.update(run_id=record['run_id'],thread_id=record['thread_id'],ordinal=record['ordinal'],provider=record['provider'],execution_started=payload.get('startedAt') is not None,status=record['status'],requested_at=lr.epoch(record['requested_at']),prediction_at=started,label_source='t3-database',censor_reason='none' if record['status']=='completed' else record['status'],expect_s=None,expect_is_prerun=False,effort='unknown',delegated=record['thread_id'].startswith('thread:delegated-task:'))
+        try:
+            payload=json.loads(record.pop('payload_json'))
+            message=json.loads(record.pop('message_json') or '{}')
+            if not isinstance(payload,dict) or not isinstance(message,dict): raise ValueError('not an object')
+            brief=str(message.get('text') or '')
+            selection=payload.get('modelSelection') or {}
+            start=payload.get('startedAt') or record['requested_at']
+            end=payload.get('completedAt') or record['completed_at']
+            if not start: continue
+            started=lr.epoch(start)
+            completed=lr.epoch(end) if end else None
+            if completed is not None and completed<=started: continue
+            # Incomplete runs remain in the concurrency index, not completion training.
+            row=lr.make_row(start=started,end=completed or started+1,model=selection.get('model',''),brief=brief,project=record.get('workspace_root') or '',session=record['thread_id'],source='t3-database')
+            row.update(run_id=record['run_id'],thread_id=record['thread_id'],ordinal=record['ordinal'],provider=record['provider'],execution_started=payload.get('startedAt') is not None,status=record['status'],requested_at=lr.epoch(record['requested_at']),prediction_at=started,label_source='t3-database',censor_reason='none' if record['status']=='completed' else record['status'],expect_s=None,expect_is_prerun=False,effort='unknown',delegated=record['thread_id'].startswith('thread:delegated-task:'),model_raw=str(selection.get('model') or ''))
+        except (ValueError,TypeError,KeyError,AttributeError):
+            if stats is not None: stats['skipped_invalid']=stats.get('skipped_invalid',0)+1
+            continue
         for option in selection.get('options') or []:
-            if option.get('id')=='reasoningEffort': row['effort']=option.get('value','unknown')
+            if isinstance(option,dict) and option.get('id')=='reasoningEffort': row['effort']=option.get('value','unknown')
         if completed is None: row.update(end=None,actual_s=None)
-        from agentpace.quantiles import WORDS
         words=re.findall(r'\w+',brief.casefold())
         row['hints']={word:words.count(word) for word in WORDS}
         human=re.search(r'\bhuman[_ -]minutes\s*[:=]\s*(\d+(?:\.\d+)?)',brief,re.I)
@@ -87,7 +106,18 @@ def result_ids(content):
     return [item for key,value in content.items() if key in ('content','structuredContent','result','task','run') for item in result_ids(value)]
 
 
+def agent_ids(record,block):
+    """The subagent id a background Agent call's result names (structured result first)."""
+    result=record.get('toolUseResult')
+    if isinstance(result,dict) and result.get('agentId'):
+        return [dict(agentId=str(result['agentId']))]
+    found=re.findall(r'\bagentId:\s*([\w-]+)',lr.content_text(block.get('content')))
+    return [dict(agentId=found[0])] if len(set(found))==1 else []
+
+
 def call_index(paths):
+    """Dispatch call key -> the identities its result names: a T3 run (delegate_task,
+    t3_thread_send) or a background subagent (Agent)."""
     index={}
     for path in paths:
         calls={}
@@ -96,15 +126,14 @@ def call_index(paths):
             blocks=(record.get('message') or {}).get('content')
             if not isinstance(blocks,list): continue
             for block in blocks:
-                if block.get('type')=='tool_use' and any(n in block.get('name','') for n in ('delegate_task','t3_thread_send')):
-                    inp=block.get('input') or {}
-                    brief=inp.get('task') or inp.get('prompt') or inp.get('message') or ''
-                    key=(str(path),lr.epoch(record['timestamp']),block['id'])
-                    calls[block['id']]=key
+                if not isinstance(block,dict): continue
+                if block.get('type')=='tool_use' and (any(n in block.get('name','') for n in ('delegate_task','t3_thread_send')) or block.get('name')=='Agent'):
+                    calls[block['id']]=((str(path),lr.epoch(record['timestamp']),block['id']),block.get('name')=='Agent')
                 elif block.get('type')=='tool_result' and block.get('tool_use_id') in calls:
-                    ids=result_ids(block.get('content'))
-                    if len(ids)==1: index.setdefault(calls[block['tool_use_id']],[]).append(ids[0])
-    return {key:list({item["runId"]:item for item in values}.values()) for key,values in index.items()}
+                    key,agent=calls[block['tool_use_id']]
+                    ids=agent_ids(record,block) if agent else result_ids(block.get('content'))
+                    if len(ids)==1: index.setdefault(key,[]).append(ids[0])
+    return {key:list({item.get("runId") or item.get("agentId"):item for item in values}.values()) for key,values in index.items()}
 
 
 def relabel(pair,identifiers,runs):
@@ -120,8 +149,17 @@ def relabel(pair,identifiers,runs):
     return result
 
 
-def hold_index(paths):
-    """Bind hold registrations to the exact preceding dispatch tool-use id."""
+def _is_vigil(token):
+    # `H=$(vigil hold ...)` and `(vigil ...)` name the same command as a bare `vigil`.
+    base=token.rsplit('$(',1)[-1].lstrip('(`')
+    return base=='vigil' or base.endswith('/vigil')
+
+
+def hold_index(paths,agents=False):
+    """Bind hold registrations to the exact preceding dispatch tool-use id.
+
+    With `agents`, a background Agent call is a dispatch too (learn links holds to subagent
+    transcripts); by default an Agent call clears the binding, as the round-3 replay expects."""
     import shlex
     links={}
     for path in paths:
@@ -131,17 +169,17 @@ def hold_index(paths):
             blocks=(record.get('message') or {}).get('content')
             if stamp is None or not isinstance(blocks,list): continue
             for block in blocks:
-                if block.get('type')!='tool_use': continue
+                if not isinstance(block,dict) or block.get('type')!='tool_use': continue
                 name=block.get('name','');inp=block.get('input') or {}
                 if any(part in name for part in ('delegate_task','t3_thread_send')):
                     last_call=(str(path),lr.epoch(stamp),block['id'])
                 elif name=='Agent':
-                    last_call=None
+                    last_call=(str(path),lr.epoch(stamp),block['id']) if agents else None
                 elif name=='Bash' and last_call:
                     try: tokens=shlex.split(inp.get('command',''))
                     except ValueError: continue
                     for i,token in enumerate(tokens):
-                        if (token=='vigil' or token.endswith('/vigil')) and tokens[i+1:i+2]==['hold']:
+                        if _is_vigil(token) and tokens[i+1:i+2]==['hold']:
                             rest=tokens[i+2:]
                             if rest[:1]==['done']: continue
                             if '--label' in rest and '--expect-s' in rest:

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from agentpace import activity_history as ah
 from agentpace import local_runs as lr
+from agentpace import usage_gap as ug
 
 
 def fingerprint(brief):
@@ -21,11 +23,16 @@ def anchors(brief):
 
 
 def finish(turn, path, meta, source):
+    """The turn as a row, or None when it has no positive duration or a malformed timestamp
+    (one bad record drops its turn, not the transcript)."""
     start,end=turn['start'],turn.get('end') or turn.get('last',turn['start'])
-    if start is None or end is None or lr.epoch(end)<=lr.epoch(start):
+    try:
+        if start is None or end is None or lr.epoch(end)<=lr.epoch(start):
+            return None
+    except (ValueError,TypeError,AttributeError):
         return None
     row=lr.make_row(start=start,end=end,model=turn.get('model',''),brief=turn.get('brief',''),project=meta.get('cwd',''),session=meta.get('id',str(path)),source=source)
-    row.update(run_id=lr.identity((str(path),turn.get('id'),start)),brief_hash=fingerprint(turn.get('brief','')),brief_anchors=anchors(turn.get('brief','')),effort=turn.get('effort','unknown'),censor_reason=turn.get('censor_reason','none'),outcome=turn.get('outcome','incomplete'))
+    row.update(run_id=lr.identity((str(path),turn.get('id'),start)),brief_hash=fingerprint(turn.get('brief','')),brief_anchors=anchors(turn.get('brief','')),effort=turn.get('effort','unknown'),censor_reason=turn.get('censor_reason','none'),outcome=turn.get('outcome','incomplete'),turn_id=turn.get('id'),model_raw=str(turn.get('model') or ''))
     human=re.search(r'\bhuman[_ -]minutes\s*[:=]\s*(\d+(?:\.\d+)?)',turn.get('brief',''),re.I)
     row['features']['human_minutes']=float(human[1]) if human else 0
     row['features']['human_known']=int(bool(human))
@@ -62,7 +69,7 @@ def codex_turns(path):
                 continue
             reason='none' if event=='task_complete' and not p.get('error') else str(p.get('reason') or 'error')
             final=str(p.get('last_agent_message',''))[:1000]
-            if re.search(r'^(?:you.ve hit|usage limit|rate limit|insufficient quota)',final.strip(),re.I):
+            if re.search(r'^(?:you.ve hit|usage limit|rate limit|insufficient quota)',final.strip(),re.I) or ug.is_usage_limit_text(final):
                 reason='usage-limit'
             turn.update(end=p.get('completed_at') or r['timestamp'],outcome='completed' if reason=='none' else 'censored',censor_reason=reason)
             row=finish(turn,path,meta,'codex-turn')
@@ -80,7 +87,12 @@ def claude_turns(path):
         kind=r.get('type'); msg=r.get('message') or {}; content=msg.get('content'); stamp=r.get('timestamp')
         if not stamp: continue
         if r.get('cwd'): meta['cwd']=r['cwd']
-        actual_user=kind=='user' and not r.get('isMeta') and not (isinstance(content,list) and any(b.get('type')=='tool_result' for b in content if isinstance(b,dict)))
+        tool_result=isinstance(content,list) and any(b.get('type')=='tool_result' for b in content if isinstance(b,dict))
+        # A resumed subagent is woken by an `isMeta` record (a coordinator message or a system
+        # notification), not a typed prompt. After a finished turn that record starts a new turn,
+        # so the idle time before it is not counted as work; inside a working turn it is not one.
+        resumed=kind=='user' and r.get('isMeta') and bool(turn) and turn.get('outcome')=='completed'
+        actual_user=kind=='user' and not tool_result and (not r.get('isMeta') or resumed)
         if actual_user:
             if turn:
                 row=finish(turn,path,meta,'claude-turn')
@@ -89,10 +101,16 @@ def claude_turns(path):
         if not turn: continue
         turn['last']=stamp
         if kind=='assistant':
-            turn['model']=msg.get('model') or turn.get('model','')
-            if msg.get('stop_reason')=='end_turn':
+            # A `<synthetic>` stub is the harness reporting an API error, not model output: it
+            # names no model, and its text says whether the error was a usage limit.
+            synthetic=bool(r.get('isApiErrorMessage')) or msg.get('model')=='<synthetic>'
+            if not synthetic:
+                turn['model']=msg.get('model') or turn.get('model','')
+            if msg.get('stop_reason')=='end_turn' and not synthetic:
                 turn.update(end=stamp,outcome='completed',censor_reason='none')
-            if r.get('isApiErrorMessage') or msg.get('stop_reason') in ('max_tokens','refusal'):
+            if synthetic:
+                turn.update(end=stamp,outcome='censored',censor_reason='usage-limit' if ug.is_usage_limit_text(ah.text_of(r)) else 'api-error')
+            elif msg.get('stop_reason') in ('max_tokens','refusal'):
                 turn.update(end=stamp,outcome='censored',censor_reason='api-error')
         if kind=='system' and r.get('subtype') in ('api_error','turn_aborted'):
             turn.update(end=stamp,outcome='censored',censor_reason=r['subtype'])

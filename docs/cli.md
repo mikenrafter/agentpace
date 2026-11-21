@@ -581,3 +581,21 @@ with remaining research list unbounded_tasks and commit_is_actionable=false;
 quantiles remain illustrative and deadline_met is unknown. Relay that warning
 to the owner. Done/removed research does not lower remaining-plan confidence.
 No general research-duration reliability has been established.
+
+## usage-gaps
+
+```text
+agentpace usage-gaps [--t3-db PATH | --no-t3] [--claude-dir PATH | --no-claude] [--codex-dir PATH | --no-codex] [--max-gap-s SECONDS] [--strong-only] [--no-collapse] [--json]
+```
+
+Measures between-run waits after a run ends on a provider usage limit and a later
+run resumes the same work. Reads T3 `statev2.sqlite` strictly read-only (`mode=ro`,
+`PRAGMA query_only=ON`) plus local Claude and Codex transcripts, without feeding
+gaps into runtime estimates or persisting prompts or workspace paths.
+
+Pairing precedence: `explicit-continuation` (`usageLimitContinuationOfRunId`) >
+`same-t3-thread` > `same-session` (all strong) > `same-project-provider` (weak,
+excluded by `--strong-only`). Intermediate zero-progress limit retries collapse
+into one episode unless `--no-collapse` is passed. Gaps above `--max-gap-s`
+(default `43200`, 12 hours) are classified as `owner-away` and excluded from
+usage-wait P50/P80/P90 quantiles.

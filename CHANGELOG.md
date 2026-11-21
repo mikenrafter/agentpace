@@ -4,6 +4,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## Unreleased
 
+### Added
+
+- `agentpace usage-gaps` measures the wait between a run that ended on a provider usage limit and the later run that resumes the same work, from T3 (read-only), Claude and Codex history, with explicit-continuation, same-thread, same-session and weak same-project pairing.
+
+### Changed
+
+- `t3_history.read_database` and `usage_gap.load_t3_runs` take `since=` and filter in SQL; a row whose JSON does not parse is skipped. `hold_index` reads `H=$(vigil hold ...)` and, with `agents=True`, background Agent calls; `call_index` reads an Agent result's `agentId`.
+- `run_labels.claude_turns` no longer takes a turn's model from a `<synthetic>` API-error stub and marks a usage-limit stub as `usage-limit`; it starts a new turn at an `isMeta` user record (a coordinator message or system notification) that follows a finished turn, so a resumed subagent's idle gap is not counted as work.
+
 ## 0.13.1 - 2026-11-10
 
 ### Changed

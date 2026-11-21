@@ -7,7 +7,11 @@ import sqlite3
 from pathlib import Path
 from agentpace import local_runs as lr,pause_clock as pc,paths as locations
 
-LIMIT=re.compile(r"you(?:'|’)ve hit your (?:usage )?limit|usage[_ -]limit(?: has been)?[_ -](?:reached|exceeded)|usage[_ -]window.*(?:exhausted|reset)|quota.*(?:exceeded|exhausted)",re.I)
+# CLAIM(limit-marker-channels): only authoritative platform/error channels trigger usage-limit
+# markers, matching Codex usage-limit and Claude monthly-spend-limit wording while excluding
+# model-capacity errors and user/tool prose [tests/test_usage_gap.py; tests/test_pause_clock.py].
+# ↳ CLAIM(limit-marker-channels)
+LIMIT=re.compile(r"you(?:'|’)ve hit your (?:[\w-]+\s+){0,3}limit|usage[_ -]limit(?: has been)?[_ -](?:reached|exceeded)|usage[_ -]window.*(?:exhausted|reset)|quota.*(?:exceeded|exhausted)|out of (?:extra )?usage",re.I)
 MACHINE=re.compile(r'flutter\s+test|cargo\s+(?:test|build)|nix\s+build|gradlew|python\S*\s+-m\s+unittest|npm\s+(?:test|run\s+build)|make\s+(?:test|build)',re.I)
 
 
