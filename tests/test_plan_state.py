@@ -35,6 +35,18 @@ class PlanStateTest(unittest.TestCase):
             self.assertEqual(scores[0]['actual_remaining_s'],40)
             self.assertEqual(scores[0]['within_p80'],True)
 
+    def test_import_matches_only_configured_host_names(self):
+        # why: host names are the user's own config, never baked into the package.
+        # catches: a hard-coded host list, matching a prefix (`laptop2`), or matching with no config.
+        text='Timings, host laptop2\n| Task | Took |\n|---|---|\n| Full suite | 1:00 |\n'
+        self.assertEqual(mt.import_text(text,'/demo','fixture',hosts=('laptop',))[0][0]['host'],'unknown')
+        self.assertEqual(mt.import_text(text,'/demo','fixture',hosts=('Laptop2',))[0][0]['host'],'laptop2')
+        self.assertEqual(mt.import_text(text,'/demo','fixture',hosts=())[0][0]['host'],'unknown')
+        with tempfile.TemporaryDirectory() as root:
+            cfg=Path(root)/'hosts'; cfg.write_text('# mine\nlaptop2\nBad Name\n')
+            self.assertEqual(mt.known_hosts(cfg),('laptop2',))
+            self.assertEqual(mt.known_hosts(Path(root)/'missing'),())
+
     def test_record_and_import_do_not_make_up_durations(self):
         # why: expected time and unparsed prose are not observed machine work.
         # catches: importing estimate columns or dropping failed parse diagnostics.

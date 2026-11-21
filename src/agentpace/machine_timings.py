@@ -14,6 +14,14 @@ from time import time
 from agentpace import local_runs as lr
 
 INDEX = paths.home()/'timings-index.json'
+# One host name per line; `host <name>` in a migrated TIMINGS header is matched only against these.
+HOSTS = Path.home()/'.config/agentpace/hosts'
+
+
+def known_hosts(path=None):
+    try: lines=(path or HOSTS).read_text().splitlines()
+    except OSError: return ()
+    return tuple(h for h in (x.split('#',1)[0].strip().casefold() for x in lines) if re.fullmatch(r'[a-z0-9][a-z0-9_.:-]*',h))
 
 
 def key(text):
@@ -91,9 +99,10 @@ def record(path,*,project,what,host,took,now=None,n_tests=None,n_files=None,cont
     return item
 
 
-def import_text(text,project,source):
+def import_text(text,project,source,hosts=None):
     rows=[]; unparsed=[]; header=[]
-    host_match=re.search(r'host\s+(laptop|desktop|remote)\b',text[:500],re.I)
+    names=known_hosts() if hosts is None else tuple(h.casefold() for h in hosts)
+    host_match=re.search(r'host\s+('+'|'.join(map(re.escape,names))+r')(?![\w.:-])',text[:500],re.I) if names else None
     host=host_match[1].lower() if host_match else 'unknown'
     for number,line in enumerate(text.splitlines(),1):
         if not line.startswith('|'):
