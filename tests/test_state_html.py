@@ -36,6 +36,10 @@ class Page(HTMLParser):
         self.scripts: list[tuple[dict, str]] = []
         self.cards: dict[str, dict] = {}
         self.roles: dict[str, str] = {}
+        self.bars: dict[str, str] = {}
+        self.ghosts: dict[str, str] = {}
+        self.ticks: list[tuple[str, str]] = []
+        self.groups: dict[tuple[str, str], dict] = {}
         self._stack: list[tuple[str, dict]] = []
         self._script: list[str] | None = None
         self.feed(text)
@@ -52,7 +56,19 @@ class Page(HTMLParser):
             self.scripts.append((attributes, ""))
         if tag == "article" and "data-task" in attributes:
             inside_details = any(name == "details" for name, _ in self._stack)
-            self.cards[attributes["data-task"]] = {"text": "", "finished": inside_details}
+            self.cards[attributes["data-task"]] = {"text": "", "finished": inside_details, "style": attributes.get("style", "")}
+        if "data-bar" in attributes:
+            self.bars[attributes["data-bar"]] = attributes.get("style", "")
+        if "data-ghost" in attributes:
+            self.ghosts[attributes["data-ghost"]] = attributes.get("style", "")
+        if attributes.get("class") == "tick":
+            self.ticks.append((attributes.get("style", ""), ""))
+        if "data-group" in attributes:
+            self.groups[(attributes["data-model"], attributes["data-kind"])] = {"text": "", "fills": [], "targets": []}
+        group = next((a for n, a in self._stack if "data-group" in a), None)
+        if group is not None and attributes.get("class", "").split()[:1] in (["fill"], ["target"]):
+            record = self.groups[(group["data-model"], group["data-kind"])]
+            record["fills" if "fill" in attributes["class"].split() else "targets"].append(attributes.get("style", ""))
         if "data-role" in attributes:
             self.roles.setdefault(attributes["data-role"], "")
 
@@ -69,7 +85,12 @@ class Page(HTMLParser):
         if self._script is not None:
             self._script.append(data)
             return
+        if self._stack and self._stack[-1][1].get("class") == "tick":
+            style, text = self.ticks[-1]
+            self.ticks[-1] = (style, text + data)
         for name, attributes in self._stack:
+            if "data-group" in attributes:
+                self.groups[(attributes["data-model"], attributes["data-kind"])]["text"] += data + " "
             if name == "article" and "data-task" in attributes:
                 self.cards[attributes["data-task"]]["text"] += data + " "
             if "data-role" in attributes:
@@ -344,7 +365,7 @@ class CalibrationHtml(unittest.TestCase):
         target = self.root / "cal.html"
         self.cal("--html", str(target))
         page = Page(target.read_text())
-        for role in ("coverage", "misses", "flags", "new"):
+        for role in ("coverage", "misses", "flags"):
             self.assertIn(role, page.roles)
         # headline: P80 hits 0/5 (opus) + 1/1 (haiku, 40 s <= 60 s) = 1/6 = 17%; each run once, so the
         #   per-kind rows must not be added on top of the per-model rollups.
@@ -355,8 +376,43 @@ class CalibrationHtml(unittest.TestCase):
         self.assertIn("opus", coverage)
         self.assertIn("0/5", coverage)
         self.assertIn("p80-undercoverage", " ".join(page.roles["flags"].split()))
-        self.assertIn("haiku", " ".join(page.roles["new"].split()))
+        self.assertIn("haiku", " ".join(page.roles["coverage"].split()))
         self.assertIn("thread=t0", " ".join(page.roles["misses"].split()))
+
+    def test_coverage_and_thin_history_are_group_cards_not_tables(self):
+        # why: owner feedback on round 1: two wide tables were cramped; each model/kind is a card with bars.
+        # catches: leaving either table in place (a <table> anywhere), or dropping a value the tables carried.
+        # arithmetic (rows in setUp): opus/fix: 5 scored, all 5 estimated (P80 only, 100 s); actuals 300..304 s, all above P80
+        #   -> P80 0/5 (bar 0%), P50 and P90 have no estimate (n 0, shown "-"). Loss per run 0.8 * (actual - 100) =
+        #   160, 160.8, 161.6, 162.4, 163.2 -> mean 161.6 -> "162 s". The flag p80-undercoverage fires (5 >= 5 runs, 0/5 < 0.6).
+        #   haiku/docs: one run, 40 s against P80 60 -> 1/1 (bar 100%); first seen NOW - 1 day = 2027-01-14 (NOW = 1.8e9 s);
+        #   reason first-seen-in-window; run-level history 1, with estimate 1, this window 1; thin below 10.
+        target = self.root / "cal.html"
+        self.cal("--html", str(target))
+        page = Page(target.read_text())
+        self.assertNotIn("table", page.tags)
+        opus = page.groups[("opus", "fix")]
+        text = " ".join(opus["text"].split())
+        for fragment in ("opus", "fix", "p80-undercoverage", "5 runs", "5 estimated", "loss 162 s", "P50", "P80", "P90", "0/5"):
+            self.assertIn(fragment, text)
+        self.assertEqual([re.search(r"width:([\d.]+)%", f).group(1) for f in opus["fills"]], ["0", "0", "0"])
+        self.assertEqual([re.search(r"left:([\d.]+)%", t).group(1) for t in opus["targets"]], ["50", "80", "90"])
+        haiku = " ".join(page.groups[("haiku", "docs")]["text"].split())
+        for fragment in ("thin history", "2027-01-14", "first-seen-in-window", "1 run", "1/1", "thin below 10"):
+            self.assertIn(fragment, haiku)
+        fill = page.groups[("haiku", "docs")]["fills"]
+        self.assertEqual([re.search(r"width:([\d.]+)%", f).group(1) for f in fill][1], "100", "the P80 bar of a 1/1 group is full")
+        self.assertNotIn("thin history", text, "a model with enough history carries no thin-history badge")
+
+    def test_a_thin_model_with_no_estimate_still_gets_a_card(self):
+        # why: the old "new or thin" table listed models with no dispatch estimate; the card grid must too.
+        # catches: building cards only from groups that have estimates.
+        learn.append_observations(self.state, [obs("sonnet", "docs", age_days=2, actual=90, pointers={"thread": "s1"})])
+        target = self.root / "cal.html"
+        self.cal("--html", str(target))
+        card = " ".join(Page(target.read_text()).groups[("sonnet", "docs")]["text"].split())
+        self.assertIn("thin history", card)
+        self.assertIn("0 with an estimate", card)
 
     def test_hostile_pointer_is_text_and_page_is_offline(self):
         # why: pointers come from transcripts and vigil labels: untrusted text.
