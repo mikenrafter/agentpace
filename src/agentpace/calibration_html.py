@@ -21,12 +21,6 @@ def _percent(hits: int, n: int) -> str:
     return "-" if n == 0 else f"{hits / n:.0%}"
 
 
-def _table(head: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    header = "".join(f"<th>{esc(h)}</th>" for h in head)
-    body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
-    return f'<div class="scroll"><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>'
-
-
 def _overall_coverage(report: Mapping[str, Any]) -> dict[str, tuple[int, int]]:
     """Hits and n per quantile, summed over each model's all-kinds row (each run counted once)."""
     totals = {name: (0, 0) for name, _ in cal.QUANTILES}
@@ -63,36 +57,6 @@ def _hero(report: Mapping[str, Any]) -> str:
     )
 
 
-def _coverage_card(report: Mapping[str, Any]) -> str:
-    rows = []
-    for g in report["groups"]:
-        this, before = g["this"], g["previous"]
-        if not (this["n_estimated"] or before["n_estimated"]):
-            continue
-        coverage = this["coverage"]
-        flags = "".join(f'<span class="badge warn">{esc(f)}</span>' for f in g["flags"])
-        rows.append([
-            esc(g["model"]),
-            "all kinds" if g["kind"] == ALL_KINDS else esc(g["kind"]),
-            f"{this['n']} ({this['n_estimated']})",
-            esc(cal._seconds(this["mean_pinball_s"])),
-            esc(cal._coverage(coverage["p50"])),
-            esc(cal._coverage(coverage["p80"])),
-            esc(cal._coverage(coverage["p90"])),
-            flags,
-        ])
-    body = (
-        _table(["model", "kind", "n (estimated)", "loss s", "P50", "P80", "P90", "flags"], rows)
-        if rows
-        else "<p>No scored run had a dispatch estimate.</p>"
-    )
-    return (
-        '<section class="card" data-role="coverage"><h2>Coverage by model and kind</h2>'
-        '<p class="muted">hits/n: the share of actuals at or under the estimate, target 50/80/90. Loss is mean pinball in seconds.</p>'
-        f"{body}</section>"
-    )
-
-
 def _flags_card(report: Mapping[str, Any]) -> str:
     t = report["thresholds"]
     items = []
@@ -114,20 +78,71 @@ def _flags_card(report: Mapping[str, Any]) -> str:
     return f'<section class="card" data-role="flags"><h2>Drift flags</h2>{body}</section>'
 
 
-def _new_card(report: Mapping[str, Any]) -> str:
-    t = report["thresholds"]
-    rows = [
-        [esc(n["model"]), "all kinds" if n["kind"] == ALL_KINDS else esc(n["kind"]), esc(n["reason"]),
-         str(n["runs"]), str(n["with_estimate"]), esc(cal._day(n["first_seen"])), str(n["n_this_window"])]
-        for n in report["new"]
-    ]
-    body = (
-        _table(["model", "kind", "reason", "run-level history", "with estimate", "first seen", "runs this window"], rows)
-        + f'<p class="muted">History counts runs from T3 and transcripts; thin below {t["min_history"]}.</p>'
-        if rows
-        else "<p>None.</p>"
+def _width(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".") + "%"
+
+
+def _bars(coverage: Mapping[str, Mapping[str, Any]]) -> str:
+    """One row per quantile: a bar for the share of actuals at or under the estimate, a line at the target."""
+    rows = []
+    for name, target in cal.QUANTILES:
+        entry = coverage[name]
+        rate = entry["rate"] or 0.0
+        low = " low" if entry["n"] and rate < target else ""
+        rows.append(
+            f"<span>{name.upper()}</span>"
+            f'<span class="track"><span class="fill{low}" style="width:{_width(rate * 100)}"></span>'
+            f'<span class="target" style="left:{_width(target * 100)}"></span></span>'
+            f"<span>{esc(cal._coverage(entry))}</span>"
+        )
+    return f'<div class="cov">{"".join(rows)}</div>'
+
+
+def _group_card(model: str, kind: str, group: Mapping[str, Any] | None, thin: Mapping[str, Any] | None, thresholds: Mapping[str, Any]) -> str:
+    """One model and kind: flags, one muted line, coverage bars; thin history adds its own badge and line."""
+    badges = [f'<span class="badge warn">{esc(flag)}</span>' for flag in (group["flags"] if group else [])]
+    if thin:
+        badges.append('<span class="badge">thin history</span>')
+    lines = []
+    bars = ""
+    if group and group["this"]["n_estimated"]:
+        this, before = group["this"], group["previous"]
+        line = f"{fmt.count(this['n'], 'run')}, {this['n_estimated']} estimated · loss {cal._seconds(this['mean_pinball_s'])} s"
+        if "loss-up" in group["flags"]:
+            line += f" · scaled loss {before['relative_loss']:.2f} → {this['relative_loss']:.2f}"
+        lines.append(line)
+        bars = _bars(this["coverage"])
+    if thin:
+        lines.append(
+            f"{thin['runs']} run-level, {thin['with_estimate']} with an estimate · first seen {cal._day(thin['first_seen'])} · "
+            f"{thin['n_this_window']} this window · {thin['reason']} · thin below {thresholds['min_history']} run-level observations"
+        )
+    heading = f"{model} · {'all kinds' if kind == ALL_KINDS else kind}"
+    muted = "".join(f'<p class="muted">{esc(line)}</p>' for line in lines)
+    return (
+        f'<div class="group" data-group data-model="{esc(model)}" data-kind="{esc(kind)}">'
+        f'<div class="head"><h3>{esc(heading)}</h3>{"".join(badges)}</div>'
+        f"{muted}{bars}</div>"
     )
-    return f'<section class="card" data-role="new"><h2>New or thin history</h2>{body}</section>'
+
+
+def _coverage_card(report: Mapping[str, Any]) -> str:
+    """Every model and kind with a dispatch estimate, and every thin-history one, as cards in one grid."""
+    thin = {(n["model"], n["kind"]): n for n in report["new"]}
+    groups = {
+        (g["model"], g["kind"]): g
+        for g in report["groups"]
+        if g["this"]["n_estimated"] or g["previous"]["n_estimated"]
+    }
+    keys = list(groups) + [key for key in thin if key not in groups]
+    cards = [_group_card(model, kind, groups.get((model, kind)), thin.get((model, kind)), report["thresholds"]) for model, kind in keys]
+    body = f'<div class="groups">{"".join(cards)}</div>' if cards else "<p>No scored run had a dispatch estimate.</p>"
+    return (
+        '<section class="card" data-role="coverage"><h2>Coverage by model and kind</h2>'
+        '<p class="muted">Bar: the share of actuals at or under the estimate, hits/n beside it. Line: the target, 50/80/90. '
+        'Loss is mean pinball in seconds. A thin-history card says why it is thin.</p>'
+        f"{body}</section>"
+    )
 
 
 def _miss_card(miss: Mapping[str, Any]) -> str:
@@ -155,5 +170,5 @@ def _misses_card(report: Mapping[str, Any]) -> str:
 def render(report: Mapping[str, Any]) -> str:
     cards = [_hero(report)]
     if report["observations"]["executions"]:
-        cards += [_misses_card(report), _flags_card(report), _coverage_card(report), _new_card(report)]
+        cards += [_misses_card(report), _flags_card(report), _coverage_card(report)]
     return page("agentpace calibration", cards, report)

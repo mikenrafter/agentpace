@@ -41,11 +41,11 @@ class PlanNotes(unittest.TestCase):
             {"id": "a", "model": "sonnet", "kind": "docs"}, {"id": "b", "model": "sonnet", "kind": "docs"},
             {"id": "x", "type": "machine", "seconds": 1800, "basis": "measured"}]}))
         self.plan = self.root / "ship.state.json"
-        code, _, err = run("plan", "init", str(self.plan), "--from", str(source), "--at", "10")
+        code, _, err = run("plan", "init", str(self.plan), "--from", str(source), "--at", "1970-01-01T00:00:10+00:00")
         self.assertEqual(code, 0, err)
 
     def note(self, task, *extra):
-        return run("plan", "note", str(self.plan), task, *extra, "--at", "20")
+        return run("plan", "note", str(self.plan), task, *extra, "--at", "1970-01-01T00:00:20+00:00")
 
     def eta(self, *extra):
         return run("eta", str(self.plan), "--now", "100", "--config", str(self.config), "--data", str(self.data),
@@ -150,8 +150,8 @@ class PlanNotes(unittest.TestCase):
             self.assertEqual(code, 2, (args, err))
             self.assertIn(reason, err)
         self.assertEqual(self.plan.read_text(), before)
-        run("plan", "start", str(self.plan), "x", "--at", "30")
-        run("plan", "done", str(self.plan), "x", "--at", "40", "--took", "10")
+        run("plan", "start", str(self.plan), "x", "--at", "1970-01-01T00:00:30+00:00")
+        run("plan", "done", str(self.plan), "x", "--at", "1970-01-01T00:00:40+00:00", "--took", "10")
         code, _, err = self.note("x", "--kind", "note", "--text", "late")
         self.assertEqual(code, 2)
         self.assertIn("open task", err)

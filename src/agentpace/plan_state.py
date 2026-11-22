@@ -9,6 +9,7 @@ from agentpace import paths
 import copy
 import json
 import fcntl
+import math
 from contextlib import contextmanager
 from pathlib import Path
 from time import time
@@ -83,6 +84,35 @@ def scope(path,*,added=None,removed=None,reason='',now=None):
     return load(path)
 
 
+NOTE_KINDS=('cut','parallel','note')
+NOTE_LIMIT=2000
+
+
+def note(path,task_id,*,kind,text,saves_s=None,now=None):
+    """Attach an agent's note to an open task: what could be cut, what parallelism would give, or plain context.
+
+    Notes are the agent's claims. `saves_s` is a claim in seconds of ETA; eta checks it against the
+    scheduler and says whether it is backed. Stored in `agent_notes` in the order written; a refused
+    call writes nothing.
+    """
+    now=time() if now is None else lr.epoch(now)
+    text=text.strip()
+    if kind not in NOTE_KINDS: raise ValueError('note kind must be one of '+', '.join(NOTE_KINDS))
+    if not text: raise ValueError('note text must not be empty')
+    if len(text)>NOTE_LIMIT: raise ValueError(f'note text is limited to {NOTE_LIMIT} characters')
+    if saves_s is not None:
+        if kind=='note': raise ValueError('--saves-s needs --kind cut or parallel')
+        if not math.isfinite(saves_s) or saves_s<0: raise ValueError('--saves-s must be a finite number of seconds, zero or more')
+    with transaction(path) as plan:
+        task=next((t for t in plan['tasks'] if t['id']==task_id),None)
+        if not task: raise ValueError('unknown plan task')
+        if task.get('status','todo') in ('done','removed'): raise ValueError(f"notes attach to an open task; {task_id} is {task['status']}")
+        entry=dict(kind=kind,text=text,saves_s=saves_s,at=now)
+        task.setdefault('agent_notes',[]).append(entry)
+        if 'events' in plan: plan['events'].append(dict(action='note',task=task_id,at=now))
+    return copy.deepcopy(entry)
+
+
 def sync_ledger(path,ledger):
     if not Path(ledger).exists(): return dict(closed=0)
     closed=0
@@ -146,6 +176,7 @@ def cmd_plan(args):
         if args.seconds is not None: task.update(seconds=args.seconds,basis=args.basis)
         result=scope(path,added=task,reason=args.reason,now=now)
     elif action in ('start','done'): result=update(path,action,args.task,now,took=args.took)
+    elif action=='note': result=note(path,args.task,kind=args.kind,text=args.text,saves_s=args.saves_s,now=now)
     elif action=='scope': result=scope(path,added=json.loads(args.add_json) if args.add_json else None,removed=args.remove,reason=args.reason,now=now)
     elif action=='deliver': result=deliver(path,now)
     elif action=='sync': result=sync_ledger(path,args.ledger)
@@ -157,10 +188,11 @@ def cmd_plan(args):
 def add_commands(commands):
     root=commands.add_parser('plan',help='agent: update the persistent deliverable plan as work proceeds')
     sub=root.add_subparsers(dest='plan_action',required=True)
-    for action in ('init','add','start','done','scope','deliver','sync','show'):
+    for action in ('init','add','start','done','note','scope','deliver','sync','show'):
         parser=sub.add_parser(action); parser.add_argument('plan'); parser.add_argument('--json',action='store_true'); parser.add_argument('--at')
         if action=='init': parser.add_argument('--from',dest='source'); parser.add_argument('--cwd',default='.')
         if action in ('add','start','done'): parser.add_argument('task'); parser.add_argument('--took',type=float)
+        if action=='note': parser.add_argument('task'); parser.add_argument('--kind',choices=NOTE_KINDS,required=True); parser.add_argument('--text',required=True); parser.add_argument('--saves-s',type=float,help='claimed seconds saved on the ETA; eta checks it against the scheduler')
         if action=='add':
             parser.add_argument('--task-json'); parser.add_argument('--model',default='sol'); parser.add_argument('--kind',default='implementation'); parser.add_argument('--type',default='agent',choices=('agent','machine','wait')); parser.add_argument('--seconds',type=float); parser.add_argument('--basis',default=''); parser.add_argument('--depends-on',action='append',default=[]); parser.add_argument('--reason',default='')
         if action=='scope': parser.add_argument('--add-json'); parser.add_argument('--remove'); parser.add_argument('--reason',required=True)

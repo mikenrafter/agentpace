@@ -435,7 +435,7 @@ agentpace eta /project.research/plans/pilot.json
 agentpace eta /project.research/plans/pilot.json --html eta.html
 ```
 
-`--html PATH` also writes one self-contained page (inline CSS, no network; the host theme's CSS variables with fallbacks) for a preview: the commit, median and slip first, a card per open task, finished tasks collapsed. The `--json` result is embedded unchanged in `<script id="agentpace-state" type="application/json">`, so an agent can read the page's snapshot instead of calling `eta` again. Stdout is unchanged.
+`--html PATH` also writes one self-contained page (inline CSS, no network; the host theme's CSS variables with fallbacks) for a preview: the commit, median and slip first, a computed "What would make it faster" card, a thin timeline rail of the schedule (one bar per open task from its start to end, coloured like its card's left border, a dashed ghost where one more agent would start it earlier) beside a card per open task, finished tasks collapsed. The `--json` result is embedded unchanged in `<script id="agentpace-state" type="application/json">`, so an agent can read the page's snapshot instead of calling `eta` again. Stdout is unchanged.
 
 Tasks have `status` of `todo`, `running`, `done`, or `removed`. Running tasks
 need `started_at`; done tasks retain `actual_s` and start/end. Scope events keep
@@ -446,6 +446,33 @@ running tasks use conditional remaining distributions; completed work is fixed.
 sums known done task durations, which can overlap. JSON includes resolved
 per-task appetite, `needs_owner`, tail support, assumed shortcuts,
 `available_spend`, configured `agent_cap` and `what_would_change_it`.
+
+The JSON also carries what the page draws, all computed by the scheduler
+(`deliverable.timeline`, `critical_path`, `speedups`):
+
+- `schedule`: `makespan_s`, `agent_cap`, `critical_path` (the longest dependency
+  chain, independent of the cap), `ticks_s` (quarter points), `with_extra_agent`,
+  and per task `start_s`, `end_s`, `wait_s` (ready but waiting for an agent) and
+  `start_with_extra_agent_s`, all for the median durations from now.
+- `speedups`: one more agent, each catalogue cut not applied or protected by
+  `--keep`/`--no-defer`, and all of them together when that saves more than any
+  one. Each row has `saves_s` and `commit_s`, both makespan differences from the
+  same scheduler as `commit`; a `saves_s` of 0 means the candidate was checked and
+  does not help.
+- per task `p80` (from the simulated draws) and `notes`.
+
+Agents attach notes to open tasks, kept in the plan state as `agent_notes`:
+
+```text
+agentpace plan note PLAN full-suite --kind cut --text 'touched modules only' --saves-s 1200
+agentpace plan note PLAN docs --kind parallel --text 'independent of implement' --saves-s 1500
+agentpace plan note PLAN apk --kind note --text 'waits on the signing key'
+```
+
+A note is the agent's claim. With `--saves-s`, `eta` checks it: a `cut` against
+shortening that task's cut by the claimed seconds, a `parallel` against one more
+agent. `scheduler_saves_s` is what the scheduler found and `backed` is true only
+when it matches; otherwise the page shows the saving as "claimed".
 
 Every ETA is logged with a snapshot and timestamp. `eta` automatically syncs
 vigil ledger completions first. Older ad-hoc plan files get a companion
@@ -504,6 +531,7 @@ agentpace plan add PLAN review2 --model opus --kind review --depends-on implemen
 agentpace plan start PLAN implement --json
 agentpace plan done PLAN implement --took 120 --json
 agentpace plan scope PLAN --remove stretch --reason 'Owner deferred to next build' --json
+agentpace plan note PLAN implement --kind cut --text 'reuse the landed row' --saves-s 900
 agentpace plan sync PLAN --json
 agentpace plan deliver PLAN --json
 agentpace plan show PLAN --json
@@ -649,6 +677,6 @@ agentpace calibration [--since 7d] [--json | --md] [--out FILE] [--html PATH] [-
 
 Reads the observation store and compares runs finished in the last `--since` window (`7d`, `12h`, `2w`) with everything earlier, per model and kind and per model overall: mean pinball loss of the estimates made at dispatch, coverage of P50/P80/P90 (the share of actuals at or under each estimate; targets 50/80/90), models and kinds with little history, the largest misses with pointers, and drift flags (`p80-undercoverage`, `loss-up`). Usage-wait runs, orchestrator turns, machine jobs and check-ins are counted and not scored, and so are vigil holds that could not be tied to exactly one run, or whose run had ended before the hold started (the report lists them by reason, `target-cancelled` apart from `link-failed`). A group with no estimate shows no loss, not zero. A hand-set ceiling (a `--expect-s` with no estimator output behind it) is never in those figures: the report counts it (`estimates.ceiling`) and its own section says how often runs finished within it (`ceiling` in each group's stats), because a loose alarm that every run meets is not a calibrated P80. `--top` must be at least 1 and `--at` a finite time. The default output is Markdown; `--out` writes it to a file, owner-only (0600).
 
-`--html PATH` also writes the report as one self-contained page (owner-only, 0600, like `--out`): coverage, the largest misses with pointers, drift flags and thin-history models as cards, with the `--json` report embedded in `<script id="agentpace-state" type="application/json">`. Stdout is unchanged.
+`--html PATH` also writes the report as one self-contained page (owner-only, 0600, like `--out`): the largest misses with pointers, drift flags, and one card per model and kind with P50/P80/P90 coverage bars against their targets (thin-history models are cards in the same grid with a badge and the reason), with the `--json` report embedded in `<script id="agentpace-state" type="application/json">`. Stdout is unchanged.
 
 The report is evidence for a reader. It never changes an estimator, and its flags are thresholds, not rules.

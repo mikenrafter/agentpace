@@ -64,11 +64,13 @@ class Page(HTMLParser):
         if attributes.get("class") == "tick":
             self.ticks.append((attributes.get("style", ""), ""))
         if "data-group" in attributes:
-            self.groups[(attributes["data-model"], attributes["data-kind"])] = {"text": "", "fills": [], "targets": []}
+            self.groups[(attributes["data-model"], attributes["data-kind"])] = {"text": "", "fills": [], "targets": [], "low": []}
         group = next((a for n, a in self._stack if "data-group" in a), None)
         if group is not None and attributes.get("class", "").split()[:1] in (["fill"], ["target"]):
             record = self.groups[(group["data-model"], group["data-kind"])]
             record["fills" if "fill" in attributes["class"].split() else "targets"].append(attributes.get("style", ""))
+            if "fill" in attributes["class"].split():
+                record["low"].append("low" in attributes["class"].split())
         if "data-role" in attributes:
             self.roles.setdefault(attributes["data-role"], "")
 
@@ -393,16 +395,33 @@ class CalibrationHtml(unittest.TestCase):
         self.assertNotIn("table", page.tags)
         opus = page.groups[("opus", "fix")]
         text = " ".join(opus["text"].split())
-        for fragment in ("opus", "fix", "p80-undercoverage", "5 runs", "5 estimated", "loss 162 s", "P50", "P80", "P90", "0/5"):
+        # opus/fix is itself first seen in the window (all five runs are this week's), so it is thin too.
+        for fragment in ("opus", "fix", "p80-undercoverage", "thin history", "5 runs", "5 estimated", "loss 162 s", "P50", "P80", "P90", "0/5"):
             self.assertIn(fragment, text)
         self.assertEqual([re.search(r"width:([\d.]+)%", f).group(1) for f in opus["fills"]], ["0", "0", "0"])
         self.assertEqual([re.search(r"left:([\d.]+)%", t).group(1) for t in opus["targets"]], ["50", "80", "90"])
+        # a bar is flagged low only where actuals fall short of the target: opus P80 0/5 < 0.8 yes; P50 and P90 have no
+        #   estimate (n 0) so they are not; haiku P80 1/1 = 100% >= 80% is not.
+        self.assertEqual(opus["low"], [False, True, False])
+        self.assertEqual(page.groups[("haiku", "docs")]["low"], [False, False, False])
         haiku = " ".join(page.groups[("haiku", "docs")]["text"].split())
         for fragment in ("thin history", "2027-01-14", "first-seen-in-window", "1 run", "1/1", "thin below 10"):
             self.assertIn(fragment, haiku)
         fill = page.groups[("haiku", "docs")]["fills"]
         self.assertEqual([re.search(r"width:([\d.]+)%", f).group(1) for f in fill][1], "100", "the P80 bar of a 1/1 group is full")
-        self.assertNotIn("thin history", text, "a model with enough history carries no thin-history badge")
+
+    def test_a_model_with_enough_history_has_no_thin_badge(self):
+        # why: the badge is the only mark of thin history now that the "new or thin" table is gone.
+        # arithmetic: sonnet/implementation gets ten run-level observations (eight from 10-17 days ago, two this week, all
+        #   estimated): >= MIN_HISTORY 10 and first seen before the window -> not in report["new"].
+        # catches: badging every card, or deriving the badge from the run count in the window.
+        learn.append_observations(self.state, [obs("sonnet", "implementation", age_days=10 + i, actual=100, p80=200) for i in range(8)]
+                                  + [obs("sonnet", "implementation", age_days=1 + i / 10, actual=100, p80=200) for i in range(2)])
+        target = self.root / "cal.html"
+        self.cal("--html", str(target))
+        text = " ".join(Page(target.read_text()).groups[("sonnet", "implementation")]["text"].split())
+        self.assertIn("2 runs, 2 estimated", text)
+        self.assertNotIn("thin history", text)
 
     def test_a_thin_model_with_no_estimate_still_gets_a_card(self):
         # why: the old "new or thin" table listed models with no dispatch estimate; the card grid must too.

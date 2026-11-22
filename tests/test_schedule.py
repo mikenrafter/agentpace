@@ -208,6 +208,17 @@ class SpeedUps(unittest.TestCase):
         self.assertEqual((tasks["a"]["p50"], tasks["a"]["p80"]), (1200, 1200))
         self.assertEqual((tasks["x"]["p50"], tasks["x"]["p80"]), (1800, 1800))
 
+    def test_p80_differs_from_the_median_when_the_history_spreads(self):
+        # why: the constant-history test cannot tell P80 from P50; a spread can.
+        # arithmetic: five measured timings 100..500 s, equal weight. weighted_quantile steps at cumulative weight
+        #   q * 5: P50 needs 2.5 -> third value 300; P80 needs 4.0 -> fourth value 400; the balanced commit cut (P40) needs 2.0 -> 200.
+        # catches: filling the P80 slot from the median draws.
+        project = lr.identity(str(self.root.resolve()))
+        timings = [{"project": project, "what": "build", "seconds": float(s)} for s in (100, 200, 300, 400, 500)]
+        plan = {"cwd": str(self.root), "tasks": [{"id": "build", "type": "machine", "what": "build"}]}
+        (task,) = dl.simulate(plan, [], {}, draws=100, now=2_000_000, timings=timings)["tasks"]
+        self.assertEqual((task["commit"], task["p50"], task["p80"]), (200, 300, 400))
+
     def test_existing_json_keys_keep_their_meaning(self):
         # why: only additions this round.
         # catches: changing commit/p50/p80 while adding the schedule.

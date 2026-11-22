@@ -128,9 +128,9 @@ class EtaRail(unittest.TestCase):
 
     def test_rail_ticks_are_the_quarter_points_of_the_schedule(self):
         # arithmetic: makespan 2400 s: 0, 600 (10 min), 1200 (20 min), 1800 (30 min), 2400 (40 min) at 0, 25, 50, 75, 100 %.
-        # catches: ticks at fixed pixel steps, or labelled in raw seconds.
+        # catches: ticks at fixed pixel steps, or labelled in raw seconds. Labels are compact (10m, 2.4h) so they fit the 3.25 rem rail.
         page, snapshot = self.page()
-        self.assertEqual([text for _, text in page.ticks], ["0 s", "10 min", "20 min", "30 min", "40 min"])
+        self.assertEqual([text for _, text in page.ticks], ["0", "10m", "20m", "30m", "40m"])
         self.assertEqual([percent(style, "top") for style, _ in page.ticks], [0, 25, 50, 75, 100])
         self.assertEqual(snapshot["schedule"]["ticks_s"], [0, 600, 1200, 1800, 2400])
 
