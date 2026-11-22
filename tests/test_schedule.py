@@ -107,6 +107,16 @@ class BindingPredecessor(unittest.TestCase):
         self.assertEqual(bound(1), {"a": None, "b": "a", "c": "b", "d": "c"})
         self.assertEqual(bound(2), {"a": None, "b": "a", "c": "a", "d": "c"})
 
+    def test_a_dependency_wins_a_tie_with_the_agent_slot(self):
+        # arithmetic, cap 2: p and q (10 s each) take the two agents at 0 and end at 10. r depends on q: it is ready at 10 and
+        #   an agent is free at 10 too, the one p held (the first free slot). Both end at 10; the dependency q is the binding
+        #   predecessor, so the path is q, r (not p, r: p ended with nothing waiting for it).
+        # catches: preferring the slot holder on a tie (path p, r), which would blame an unrelated task.
+        tasks = [agent("p"), agent("q"), agent("r", "q")]
+        durations = {"p": 10, "q": 10, "r": 10}
+        self.assertEqual(dl.timeline(tasks, durations, 2)["tasks"]["r"]["bound_by"], "q")
+        self.assertEqual(dl.critical_path(tasks, durations, 2), ["q", "r"])
+
 
 class CriticalPath(unittest.TestCase):
     """The chain of binding predecessors back from the task that ends last: what really delays the commit."""
