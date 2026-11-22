@@ -118,6 +118,7 @@ class CriticalPath(unittest.TestCase):
         self.assertEqual(dl.critical_path(Timeline.DIAMOND, Timeline.DIAMOND_S, 2), ["a", "c", "d"])
 
     def test_diamond_at_cap_1_runs_through_the_task_that_held_the_agent(self):
+        # proves: CLAIM(critical-path)
         # arithmetic: cap 1: a 0-10, b 10-30, c 30-60 (the agent was b's until 30), d 60-65. d <- c <- b <- a.
         #   Cutting b really does move the end, so b is on the path although c does not depend on it.
         # catches: the pure dependency chain a, c, d at cap 1 (the owner-visible contradiction in review finding 1).

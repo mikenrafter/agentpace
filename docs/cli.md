@@ -450,16 +450,24 @@ per-task appetite, `needs_owner`, tail support, assumed shortcuts,
 The JSON also carries what the page draws, all computed by the scheduler
 (`deliverable.timeline`, `critical_path`, `speedups`):
 
-- `schedule`: `makespan_s`, `agent_cap`, `critical_path` (the longest dependency
-  chain, independent of the cap), `ticks_s` (quarter points), `with_extra_agent`,
-  and per task `start_s`, `end_s`, `wait_s` (ready but waiting for an agent) and
-  `start_with_extra_agent_s`, all for the median durations from now.
+- `schedule`: `makespan_s`, `agent_cap`, `critical_path` (what delays the end: the
+  chain of binding predecessors back from the task that ends last, each one being
+  whatever set the next task's start, a dependency or the task that held its agent
+  slot, so at cap 1 a run of agent tasks is one chain and a machine step with slack
+  is not on it), `ticks_s` (quarter points), `with_extra_agent`, and per task
+  `start_s`, `end_s`, `wait_s` (ready but waiting for an agent), `bound_by` (the
+  task whose end set the start, or null) and `start_with_extra_agent_s`, all for
+  the median durations from now.
 - `speedups`: one more agent, each catalogue cut not applied or protected by
-  `--keep`/`--no-defer`, and all of them together when that saves more than any
-  one. Each row has `saves_s` and `commit_s`, both makespan differences from the
-  same scheduler as `commit`; a `saves_s` of 0 means the candidate was checked and
-  does not help.
-- per task `p80` (from the simulated draws) and `notes`.
+  `--keep`/`--no-defer`, and all of them together, at the highest agent cap any of
+  them uses, when that saves more than any one. Each row has `saves_s` and
+  `commit_s`, both makespan differences from the same scheduler as `commit`, on
+  commit cuts (`duration_basis`; the schedule above uses medians); a `saves_s` of 0
+  means the candidate was checked and does not help. A row that raises the agent cap
+  has `needs_owner: true` and `agent_cap`; `catalogue_id` is the extra-agents entry
+  behind it, or null when the plan has none (`cost` is then `{"class": "high"}`, what
+  such an entry must declare).
+- per task `p80` (from the simulated draws), `notes` and `note_warnings`.
 
 Agents attach notes to open tasks, kept in the plan state as `agent_notes`:
 
@@ -469,10 +477,24 @@ agentpace plan note PLAN docs --kind parallel --text 'independent of implement' 
 agentpace plan note PLAN apk --kind note --text 'waits on the signing key'
 ```
 
-A note is the agent's claim. With `--saves-s`, `eta` checks it: a `cut` against
-shortening that task's cut by the claimed seconds, a `parallel` against one more
-agent. `scheduler_saves_s` is what the scheduler found and `backed` is true only
-when it matches; otherwise the page shows the saving as "claimed".
+A note is the agent's claim, and the saving is always that claim: the scheduler
+cannot know whether a task really gets shorter. With `--saves-s`, `eta` checks the
+ETA effect. A `cut` asks "if this task saves that many seconds, does the ETA move
+by as much": the task's cut is shortened by the claim and the makespan compared. A
+`parallel` note asks the same of one more agent for this task: the task must start
+earlier with it (a machine or wait step takes no agent, so it never does) and the
+makespan change must match. `scheduler_saves_s` is what the scheduler found,
+`why_not_backed` says when the check did not apply, and `backed` is true only
+when the effect matches within half a second; the page then shows "ETA effect
+checked", and otherwise the claim with the scheduler's figure beside it (in seconds
+when both would print as the same minutes).
+
+`plan note` refuses a hand-written plan file with no event log (exit 2); run
+`plan init` and note on the state file. `plan note`, `plan add` and `plan scope
+--add-json` refuse notes that are not an object with a kind (`cut`, `parallel`,
+`note`), non-empty text and a finite `saves_s` of zero or more (only on `cut` and
+`parallel`). A plan an agent edited by hand can still hold a bad note: `eta` skips
+it, lists it under the task's `note_warnings` and prints the warning on the card.
 
 Every ETA is logged with a snapshot and timestamp. `eta` automatically syncs
 vigil ledger completions first. Older ad-hoc plan files get a companion

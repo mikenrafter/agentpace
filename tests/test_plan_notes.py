@@ -84,6 +84,7 @@ class PlanNotes(unittest.TestCase):
         #   x parallel 600: a machine step takes no agent -> not backed, nothing to find (None), and it says why.
         #   cut b by 300: a 1200 + b 900 = 2100 > x 1800 -> commit 2100, saves 300 -> backed. cut x by 300 -> 1500: commit
         #   stays 2400 (b still ends last), saves 0 -> claim.
+        # proves: CLAIM(note-check)
         # catches: comparing every parallel note with the plan-wide gain (the machine note and a's note come back backed),
         #   trusting --saves-s, or hiding the scheduler's own figure.
         self.note("b", "--kind", "parallel", "--text", "backed", "--saves-s", "600")

@@ -5,6 +5,7 @@ Contract (a Rust tool can copy it; `vigil` is the intended second user):
   data block, `<script id="agentpace-state" type="application/json">` holding `snapshot`.
 - The snapshot is exactly what the tool's `--json` prints; the page never embeds a different view.
 - Card fragments are HTML the caller built; every untrusted string in them goes through `esc`.
+- `main` keeps 6rem under the last card so T3's mobile navigation does not cover it.
 - Colours come from the host theme's variables (T3's `--card`, `--border`, `--chart-n`, ...) with a
   fallback set, light and dark. `html` and `body` get no background and no side padding: the host
   frame supplies them. Text sits on card surfaces, so a dark fallback stays legible on a white
@@ -44,7 +45,7 @@ _CSS = """
   }
 }
 body{margin:0;font-family:var(--s-font);color:var(--s-text);line-height:1.45;font-size:14.5px}
-main{display:grid;gap:.75rem;padding-block:.75rem;min-width:0}
+main{display:grid;gap:.75rem;padding-block:.75rem;padding-block-end:6rem;min-width:0}
 .card{background:var(--s-card);color:var(--s-text);border:1px solid var(--s-border);
   border-radius:var(--s-radius);padding:1rem;min-width:0;overflow-wrap:anywhere}
 .item{border:1px solid var(--s-border);border-radius:var(--s-radius);padding:.75rem;min-width:0}
@@ -75,6 +76,7 @@ h3{font-size:.95rem;font-weight:600}
 .rail .tick{position:absolute;left:0;font-size:.7rem;color:var(--s-muted);transform:translateY(-50%)}
 .rail .bar{position:absolute;width:4px;min-height:2px;border-radius:2px}
 .rail .ghost{position:absolute;width:4px;min-height:2px;border-radius:2px;opacity:.35;background-image:repeating-linear-gradient(180deg,currentColor 0 4px,transparent 4px 7px)}
+.timeline .basis{grid-column:1/-1}
 .tasks{display:grid;gap:.6rem;min-width:0}
 .task{border-left:4px solid var(--c)}
 .notes{margin:.6rem 0 0;padding:0;list-style:none;display:grid;gap:.35rem}

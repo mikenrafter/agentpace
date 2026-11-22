@@ -112,6 +112,8 @@ def _group_card(model: str, kind: str, group: Mapping[str, Any] | None, thin: Ma
             line += f" · scaled loss {before['relative_loss']:.2f} → {this['relative_loss']:.2f}"
         lines.append(line)
         bars = _bars(this["coverage"])
+    elif group:
+        lines.append(f"{fmt.count(group['this']['n'], 'run')}, none estimated this window")
     if thin:
         lines.append(
             f"{thin['runs']} run-level, {thin['with_estimate']} with an estimate · first seen {cal._day(thin['first_seen'])} · "

@@ -84,21 +84,48 @@ def _task_notes(applied: Sequence[Mapping[str, Any]], kept: str | None) -> list[
 NOTE_LABELS = {"cut": "Cut", "parallel": "Parallel", "note": "Note"}
 
 
-def _agent_notes(notes: Sequence[Mapping[str, Any]]) -> str:
-    """The agent's notes in a tinted list. A saving is the agent's claim unless the scheduler reproduced it."""
+def _seconds(value: float) -> str:
+    return f"{value:,.1f}".rstrip("0").rstrip(".") + " s"
+
+
+def _pair(claimed: float, found: float) -> tuple[str, str]:
+    """Both figures as durations; as seconds when they would print the same although they differ."""
+    texts = fmt.duration(claimed), fmt.duration(found)
+    return (_seconds(claimed), _seconds(found)) if texts[0] == texts[1] else texts
+
+
+def _claim_line(note: Mapping[str, Any]) -> str:
+    """What the agent claimed, then what the scheduler could check.
+
+    The scheduler can only say "if this saves N, the ETA moves by M", so a saving is always the agent's claim
+    and the badge says `ETA effect checked`, never that the saving itself was confirmed.
+    """
+    claimed, found = note["saves_s"], note.get("scheduler_saves_s")
+    cut = note["kind"] == "cut"
+    saving = f"task saves {esc(fmt.duration(claimed))}" if cut else f"saves {esc(fmt.duration(claimed))}"
+    if note.get("backed"):
+        effect = "the ETA moves" if cut else "one more agent starts this earlier and the ETA moves"
+        return f' <span class="badge">claimed</span> {saving} <span class="badge accent">ETA effect checked</span> {effect} {esc(fmt.duration(found))}'
+    if note.get("why_not_backed"):
+        return f' <span class="badge">claimed</span> {saving}; {esc(note["why_not_backed"])}'
+    said, checked = _pair(claimed, found)
+    saving = f"task saves {esc(said)}" if cut else f"saves {esc(said)}"
+    effect = "the scheduler says the ETA would move" if cut else "with one more agent the ETA would move"
+    return f' <span class="badge">claimed</span> {saving}; {effect} {esc(checked)}'
+
+
+def _agent_notes(notes: Sequence[Mapping[str, Any]], warnings: Sequence[str] = ()) -> str:
+    """The agent's notes in a tinted list, claims marked as claims; notes the scheduler had to skip are named."""
+    skipped = "".join(f'<p class="banner">{esc(warning)}</p>' for warning in warnings)
     if not notes:
-        return ""
+        return skipped
     items = []
     for note in notes:
         line = f'<b>{esc(NOTE_LABELS.get(note["kind"], note["kind"]))}:</b> {esc(note["text"])}'
         if note.get("saves_s") is not None:
-            saving = esc(fmt.duration(note["saves_s"]))
-            if note.get("backed"):
-                line += f' <span class="badge accent">confirmed by the scheduler</span> saves {saving}'
-            else:
-                line += f' <span class="badge">claimed</span> saves {saving}; scheduler finds {esc(fmt.duration(note["scheduler_saves_s"]))}'
+            line += _claim_line(note)
         items.append(f"<li>{line}</li>")
-    return f'<p class="muted">Agent notes (the agent\'s words, not computed)</p><ul class="notes">{"".join(items)}</ul>'
+    return f'<p class="muted">Agent notes (the agent\'s words; the scheduler checks only the ETA effect)</p><ul class="notes">{"".join(items)}</ul>{skipped}'
 
 
 def _card(
@@ -158,7 +185,7 @@ def _card(
         f'<article class="card{" task" if colour is not None else ""}" data-task="{esc(summary["id"])}" data-status="{esc(status)}"{style}>'
         f'<div class="head">{"".join(heading)}</div>'
         f'<div class="badges">{"".join(badges)}</div>{"".join(extra)}'
-        f'<dl class="facts">{"".join(lines)}</dl>{_agent_notes(summary.get("notes", []))}</article>'
+        f'<dl class="facts">{"".join(lines)}</dl>{_agent_notes(summary.get("notes", []), summary.get("note_warnings", []))}</article>'
     )
 
 
@@ -181,7 +208,7 @@ def _speedups_card(result: Mapping[str, Any]) -> str:
         return f'<section class="card whatif" data-role="speedups"><h2>What would make it faster</h2>{body}</section>'
     rows = []
     for entry in helps:
-        owner = ' <span class="badge warn">needs an owner grant</span>' if entry.get("needs_owner") else ""
+        owner = ' <span class="badge warn">needs owner</span>' if entry.get("needs_owner") else ""
         risk = f' <span class="muted">risk: {esc(entry["risk"])}</span>' if entry.get("risk") else ""
         rows.append(
             f'<div class="row"><span>{esc(entry["label"])}{risk}{owner}</span>'
@@ -190,6 +217,7 @@ def _speedups_card(result: Mapping[str, Any]) -> str:
     idle = [e for e in entries if e["saves_s"] <= 0 and e["kind"] != "combined"]
     notes = [
         "Computed by the scheduler from dependencies and the cap; each row is the saving and the commit it would give. "
+        "Savings use commit cuts (each task at its commit quantile), the same clock as the commit. "
         "Raising the cap needs an authorized extra-agents entry. Notes on the cards below are the agent's."
     ]
     if idle:
@@ -260,7 +288,8 @@ def render(result: Mapping[str, Any], plan: Mapping[str, Any], *, keep: Sequence
     if open_cards:
         cards.append(_speedups_card(result))
         rail = _rail(schedule, open_ids) if schedule.get("makespan_s") else "<div></div>"
-        cards.append(f'<section class="timeline" data-role="tasks">{rail}<div class="tasks">{"".join(open_cards)}</div></section>')
+        basis = '<p class="muted basis">Bars and Runs use median durations from now, so the rail can end earlier or later than the commit.</p>'
+        cards.append(f'<section class="timeline" data-role="tasks">{rail}<div class="tasks">{"".join(open_cards)}</div>{basis}</section>')
     spend = [
         f'<li>Available with <code>{esc(e["available_with"])}</code> and an owner grant: saves {esc(fmt.duration(e.get("eta_gain_s", 0)))}; spends {esc(e["cost"])}.</li>'
         for e in result.get("available_spend", [])

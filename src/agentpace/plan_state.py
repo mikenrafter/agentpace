@@ -71,6 +71,8 @@ def update(path,action,task_id,now=None,took=None):
 
 def scope(path,*,added=None,removed=None,reason='',now=None):
     now=time() if now is None else lr.epoch(now)
+    problem=notes_problem(added) if added else None
+    if problem: raise ValueError(problem)
     with transaction(path) as plan:
         if added:
             if any(t['id']==added['id'] for t in plan['tasks']): raise ValueError('duplicate task id')
@@ -88,28 +90,57 @@ NOTE_KINDS=('cut','parallel','note')
 NOTE_LIMIT=2000
 
 
+def note_problem(note):
+    """Why `note` cannot be kept as an agent note, or None when it can.
+
+    The one rule for notes: `plan note` checks what it is about to store, `plan add`/`plan scope` check the
+    notes a task arrives with, and `deliverable.checked_notes` skips what fails here when it reads a plan an
+    agent edited by hand. A note is an object with a known `kind`, non-empty `text` of at most NOTE_LIMIT
+    characters, and an optional `saves_s`: finite, zero or more, and only on a `cut` or `parallel` note.
+    """
+    if not isinstance(note,dict): return 'a note must be an object with kind, text and saves_s'
+    kind,text,saves=note.get('kind'),note.get('text'),note.get('saves_s')
+    if kind not in NOTE_KINDS: return 'note kind must be one of '+', '.join(NOTE_KINDS)
+    if not isinstance(text,str) or not text.strip(): return 'note text must be non-empty text'
+    if len(text)>NOTE_LIMIT: return f'note text is limited to {NOTE_LIMIT} characters'
+    if saves is not None:
+        if kind=='note': return 'saves_s (--saves-s) needs kind cut or parallel'
+        if isinstance(saves,bool) or not isinstance(saves,(int,float)) or not math.isfinite(saves) or saves<0:
+            return 'saves_s (--saves-s) must be a finite number of seconds, zero or more'
+    return None
+
+
+def notes_problem(task):
+    """Why the `agent_notes` a task arrives with cannot be stored, or None."""
+    notes=task.get('agent_notes') if isinstance(task,dict) else None
+    if notes is None: return None
+    if not isinstance(notes,list): return 'agent_notes must be a list of notes'
+    for number,note in enumerate(notes,1):
+        problem=note_problem(note)
+        if problem: return f'agent note {number}: {problem}'
+    return None
+
+
 def note(path,task_id,*,kind,text,saves_s=None,now=None):
     """Attach an agent's note to an open task: what could be cut, what parallelism would give, or plain context.
 
     Notes are the agent's claims. `saves_s` is a claim in seconds of ETA; eta checks it against the
     scheduler and says whether it is backed. Stored in `agent_notes` in the order written; a refused
-    call writes nothing.
+    call writes nothing. A hand-written plan file (no `events`; `eta` keeps its state in a `.state.json`
+    companion) is refused rather than rewritten.
     """
     now=time() if now is None else lr.epoch(now)
-    text=text.strip()
-    if kind not in NOTE_KINDS: raise ValueError('note kind must be one of '+', '.join(NOTE_KINDS))
-    if not text: raise ValueError('note text must not be empty')
-    if len(text)>NOTE_LIMIT: raise ValueError(f'note text is limited to {NOTE_LIMIT} characters')
-    if saves_s is not None:
-        if kind=='note': raise ValueError('--saves-s needs --kind cut or parallel')
-        if not math.isfinite(saves_s) or saves_s<0: raise ValueError('--saves-s must be a finite number of seconds, zero or more')
+    entry=dict(kind=kind,text=text.strip(),saves_s=saves_s,at=now)
+    problem=note_problem(entry)
+    if problem: raise ValueError(problem)
+    if 'events' not in load(path):
+        raise ValueError(f'{Path(path).name} is a hand-written plan with no event log, so a note on it would be lost; use `agentpace plan init <state.json> --from {path}` and note on that file')
     with transaction(path) as plan:
         task=next((t for t in plan['tasks'] if t['id']==task_id),None)
         if not task: raise ValueError('unknown plan task')
         if task.get('status','todo') in ('done','removed'): raise ValueError(f"notes attach to an open task; {task_id} is {task['status']}")
-        entry=dict(kind=kind,text=text,saves_s=saves_s,at=now)
         task.setdefault('agent_notes',[]).append(entry)
-        if 'events' in plan: plan['events'].append(dict(action='note',task=task_id,at=now))
+        plan['events'].append(dict(action='note',task=task_id,at=now))
     return copy.deepcopy(entry)
 
 

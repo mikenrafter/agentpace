@@ -13,7 +13,7 @@ import json
 import math
 import random
 from pathlib import Path
-from agentpace import local_runs as lr
+from agentpace import local_runs as lr, plan_state as ps
 
 CUTS = {'conservative': .5, 'balanced': .4, 'aggressive': .3}
 
@@ -84,21 +84,25 @@ def makespan(tasks, durations):
 def timeline(tasks, durations, agent_cap=1):
     """List-schedule agent tasks under the configured cap; machine steps are explicit.
 
-    Returns the makespan and, per task id, `start_s`, `end_s` and `wait_s` (how long the task sat ready
-    before an agent took it; machine and wait steps never queue). `schedule` is its makespan, so commit,
-    P50 and P80 and every start and end on the eta page come from this one pass.
+    Returns the makespan and, per task id, `start_s`, `end_s`, `wait_s` (how long the task sat ready
+    before an agent took it; machine and wait steps never queue) and `bound_by`: the task whose end set
+    this task's start, either its last dependency or the task that held the agent slot it took, a
+    dependency winning a tie; `None` when nothing held it back. `schedule` is its makespan, so commit,
+    P50 and P80 and every start, end and critical path on the eta page come from this one pass.
     """
     spans = {}
-    slots = [0.0] * agent_cap
+    slots = [(0.0, None)] * agent_cap
     for task in ordered(tasks):
-        ready = max((spans[d]['end_s'] for d in task.get('depends_on', [])), default=0)
+        dependencies = task.get('depends_on', [])
+        ready = max((spans[d]['end_s'] for d in dependencies), default=0)
+        start, bound = ready, max(dependencies, key=lambda d: spans[d]['end_s'], default=None)
         duration = durations[task['id']]
-        start = ready
         if task.get('type', 'agent') == 'agent' and duration > 0:
-            slot = min(range(agent_cap), key=lambda i: slots[i])
-            start = max(ready, slots[slot])
-            slots[slot] = start + duration
-        spans[task['id']] = dict(start_s=start, end_s=start + duration, wait_s=start - ready)
+            slot = min(range(agent_cap), key=lambda i: slots[i][0])
+            if slots[slot][0] > ready:
+                start, bound = slots[slot]
+            slots[slot] = (start + duration, task['id'])
+        spans[task['id']] = dict(start_s=start, end_s=start + duration, wait_s=start - ready, bound_by=bound)
     return dict(makespan_s=max(s['end_s'] for s in spans.values()), tasks=spans)
 
 
@@ -106,22 +110,23 @@ def schedule(tasks, durations, agent_cap=1):
     return timeline(tasks, durations, agent_cap)['makespan_s']
 
 
-def critical_path(tasks, durations):
-    """The longest dependency chain by duration, first task first; tasks of zero length are left out.
+def critical_path(tasks, durations, agent_cap=1):
+    """What delays the end: the chain of binding predecessors back from the task that ends last, first task first.
 
-    It is the chain that bounds the plan however many agents there are, so it does not depend on the
-    cap. A task off it that still starts late is queueing for an agent: its `wait_s` says so.
+    CLAIM(critical-path): each task on it starts the moment the one before it ends, so a delay to any of them
+    delays the end, and a task off it has slack against the end [tests/test_schedule.py CriticalPath;
+    tests/test_eta_rail.py cards].
+
+    Each link is whatever set that task's start in `timeline`, a dependency or the task that held its agent
+    slot, so at cap 1 a run of agent tasks is one chain (cutting any of them moves the end) while a machine
+    step with slack, running beside the agents, is not on it. Zero-length tasks (finished work) are left out.
     """
-    finish, via = {}, {}
-    for task in ordered(tasks):
-        dependencies = task.get('depends_on', [])
-        via[task['id']] = max(dependencies, key=lambda d: finish[d], default=None)
-        finish[task['id']] = finish.get(via[task['id']], 0) + durations[task['id']]
-    last = max(finish, key=lambda i: finish[i])
+    spans = timeline(tasks, durations, agent_cap)['tasks']
+    last = max(spans, key=lambda i: spans[i]['end_s'])
     path = []
     while last is not None:
         path.append(last)
-        last = via[last]
+        last = spans[last]['bound_by']
     return [i for i in reversed(path) if durations[i] > 0]
 
 
@@ -132,18 +137,24 @@ def speedups(tasks, cuts, cap, catalogue, applied=(), keep=(), no_defer=()):
     """What would shorten the commit, each as a makespan difference from `schedule` on the same cuts.
 
     One more agent; each catalogue cut not already applied and not protected by `keep`/`no_defer`; and
-    all of those together when that saves more than any one of them. Rows with `saves_s` of zero are
-    kept: they say a candidate was checked and does not help. Raising the cap or a high-cost entry
-    still needs an owner grant (`needs_owner`).
+    all of those together, at the highest agent cap any of them uses, when that saves more than any one
+    of them. Rows with `saves_s` of zero are kept: they say a candidate was checked and does not help.
+    Every row is on commit cuts (`duration_basis`). A row that raises the cap always has `needs_owner`
+    (`simulate` refuses a higher cap without an authorized extra-agents entry; `catalogue_id` names the
+    entry, or is None when the plan has none); a cut has it when its cost class is high.
     """
     base = schedule(tasks, cuts, cap)
     open_ids = {t['id'] for t in tasks if t.get('status', 'todo') not in ('done', 'removed', 'running') and t.get('type', 'agent') in ('machine', 'wait')}
 
     def row(entry_id, kind, label, new_cuts, new_cap, **fields):
         commit = schedule(tasks, new_cuts, new_cap)
-        return dict(id=entry_id, kind=kind, label=label, saves_s=base - commit, commit_s=commit, computed=True, **fields)
+        return dict(id=entry_id, kind=kind, label=label, saves_s=base - commit, commit_s=commit, computed=True, duration_basis='commit cuts', **fields)
 
-    rows = [row('agent-cap', 'agent-cap', f'Agent cap {cap + 1}', cuts, cap + 1, agent_cap=cap + 1, cost={'class': 'none'}, needs_owner=False)]
+    def cap_row(entry, new_cap):
+        cost = entry.get('cost', {'class': 'high'}) if entry else {'class': 'high'}
+        return row(entry['id'] if entry else 'agent-cap', 'agent-cap', f'Agent cap {new_cap}', cuts, new_cap, agent_cap=new_cap, cost=cost, needs_owner=True, catalogue_id=entry['id'] if entry else None)
+
+    rows = [cap_row(None, cap + 1)]
     cut_cuts = dict(cuts)
     for entry in catalogue:
         if entry['id'] in applied or set(entry.get('protects', [])) & set(keep) or entry.get('task') in no_defer:
@@ -151,43 +162,64 @@ def speedups(tasks, cuts, cap, catalogue, applied=(), keep=(), no_defer=()):
         cost = entry.get('cost', {'class': 'none'})
         if entry.get('mechanism') == 'extra-agents':
             if int(entry['agent_cap']) == cap + 1:
-                rows[0].update(cost=cost, needs_owner=cost['class'] == 'high', catalogue_id=entry['id'])
+                rows[0] = dict(cap_row(entry, cap + 1), id='agent-cap')
             elif int(entry['agent_cap']) > cap + 1:
-                rows.append(row(entry['id'], 'agent-cap', f"Agent cap {int(entry['agent_cap'])}", cuts, int(entry['agent_cap']), agent_cap=int(entry['agent_cap']), cost=cost, needs_owner=cost['class'] == 'high'))
+                rows.append(cap_row(entry, int(entry['agent_cap'])))
             continue
         if entry.get('task') not in open_ids or 'seconds' not in entry:
             continue
         shorter = dict(cuts, **{entry['task']: min(cuts[entry['task']], float(entry['seconds']))})
-        cut_cuts[entry['task']] = shorter[entry['task']]
+        cut_cuts[entry['task']] = min(cut_cuts[entry['task']], shorter[entry['task']])
         rows.append(row(entry['id'], 'cut', entry.get('label') or f"Cut {entry['task']}", shorter, cap, task=entry['task'], cost=cost, needs_owner=cost['class'] == 'high', risk=entry.get('risk'), basis=entry.get('basis')))
     if len(rows) > 1:
-        combined = row('combined', 'combined', 'All of these', cut_cuts, cap + 1, members=[r['id'] for r in rows], needs_owner=any(r['needs_owner'] for r in rows))
+        top_cap = max(r.get('agent_cap', cap) for r in rows)
+        combined = row('combined', 'combined', 'All of these', cut_cuts, top_cap, agent_cap=top_cap, members=[r['id'] for r in rows], needs_owner=any(r['needs_owner'] for r in rows))
         if combined['saves_s'] > max(r['saves_s'] for r in rows):
             rows.append(combined)
     return rows
 
 
 def checked_notes(task, tasks, cuts, cap):
-    """The task's agent notes with what the scheduler finds for each claim.
+    """The task's agent notes with what the scheduler finds for each claim, and a warning for each note it skipped.
 
-    A `cut` claim is checked by shortening that task's cut by the claimed seconds, a `parallel` claim
-    against one more agent. `backed` is true only when the scheduler's saving matches the claim; a
-    note with no claim, or whose claim the scheduler does not reproduce, stays the agent's word.
+    The scheduler cannot know whether a task really gets shorter, so a `cut` claim is checked as "if this
+    task saves `saves_s`, does the ETA move by that much": the task's cut is shortened by the claim and the
+    makespan compared. A `parallel` claim is checked against one more agent *for this task*: it needs the
+    task to start earlier with that agent (a machine or wait step takes none, so it cannot), and then the
+    makespan change must match the claim. `backed` means that check agrees within `NOTE_TOLERANCE_S`;
+    whether the task's own time shrinks stays the agent's word. `why_not_backed` is set when the check does
+    not apply. A note `plan_state.note_problem` rejects, or an `agent_notes` that is not a list, is skipped
+    and named in the warnings, so a hand-edited plan cannot stop `eta`.
     """
-    base = schedule(tasks, cuts, cap)
-    found = []
-    for note in task.get('agent_notes', []):
+    raw = task.get('agent_notes', [])
+    if not isinstance(raw, list):
+        return [], ['agent_notes skipped: it is not a list of notes']
+    base_run, more_run = timeline(tasks, cuts, cap), timeline(tasks, cuts, cap + 1)
+    base = base_run['makespan_s']
+    found, warnings = [], []
+    for number, note in enumerate(raw, 1):
+        problem = ps.note_problem(note)
+        if problem:
+            warnings.append(f'agent note {number} skipped: {problem}')
+            continue
         claim, kind = note.get('saves_s'), note['kind']
+        checked = dict(note, saves_s=claim, scheduler_saves_s=None, backed=False, why_not_backed=None)
+        found.append(checked)
         if claim is None:
-            found.append(dict(note, saves_s=None, scheduler_saves_s=None, backed=False))
             continue
         if kind == 'cut':
             shorter = dict(cuts, **{task['id']: max(0, cuts[task['id']] - claim)})
-            computed = base - schedule(tasks, shorter, cap)
+            checked['scheduler_saves_s'] = base - schedule(tasks, shorter, cap)
+        elif task.get('type', 'agent') != 'agent':
+            checked['why_not_backed'] = f"a {task['type']} step takes no agent, so one more agent cannot speed it up"
+            continue
+        elif more_run['tasks'][task['id']]['start_s'] >= base_run['tasks'][task['id']]['start_s']:
+            checked.update(scheduler_saves_s=0, why_not_backed='this task would not start earlier with one more agent')
+            continue
         else:
-            computed = base - schedule(tasks, cuts, cap + 1)
-        found.append(dict(note, scheduler_saves_s=computed, backed=abs(computed - claim) <= NOTE_TOLERANCE_S))
-    return found
+            checked['scheduler_saves_s'] = base - more_run['makespan_s']
+        checked['backed'] = abs(checked['scheduler_saves_s'] - claim) <= NOTE_TOLERANCE_S
+    return found, warnings
 
 
 def apply_tradeoffs(plan, keep, no_defer, allow_spend=(), authorized=()):
@@ -348,12 +380,12 @@ def simulate(plan, rows, config, *, draws=4000, keep=(), no_defer=(), timings=()
     commit=schedule(tasks,cuts,cap)
     medians={summary['id']:summary['p50'] for summary in summaries}
     median_run, with_agent = timeline(tasks,medians,cap), timeline(tasks,medians,cap+1)
-    planned=dict(basis='median durations from now',agent_cap=cap,makespan_s=median_run['makespan_s'],critical_path=critical_path(tasks,medians),
+    planned=dict(basis='median durations from now',agent_cap=cap,makespan_s=median_run['makespan_s'],critical_path=critical_path(tasks,medians,cap),
         ticks_s=[median_run['makespan_s']*quarter/4 for quarter in range(5)],with_extra_agent=dict(agent_cap=cap+1,makespan_s=with_agent['makespan_s']),
         tasks={task_id:dict(span,start_with_extra_agent_s=with_agent['tasks'][task_id]['start_s']) for task_id,span in median_run['tasks'].items()})
     faster=speedups(tasks,cuts,cap,plan.get('tradeoffs',[]),applied={entry['id'] for entry in tradeoffs},keep=keep,no_defer=no_defer)
     for summary in summaries:
-        summary['notes']=checked_notes(next(t for t in tasks if t['id']==summary['id']),tasks,cuts,cap)
+        summary['notes'],summary['note_warnings']=checked_notes(next(t for t in tasks if t['id']==summary['id']),tasks,cuts,cap)
     unbounded=[]
     for summary in summaries:
         task=next(t for t in tasks if t['id']==summary['id'])
@@ -398,7 +430,7 @@ def cmd_eta(args):
         artifact=qt.load_runtime()
         config['quantile_model']=dict(reference=rows,drop=[]) if 'reference' in artifact else qt.fit(rows,**artifact['settings'])
     timings = list(lr.json_lines(args.timings)) if Path(args.timings).exists() else []
-    from agentpace import plan_state as ps, machine_timings as mt
+    from agentpace import machine_timings as mt
     persistent = 'events' in plan
     if persistent:
         ps.sync_ledger(plan_path,args.ledger)
