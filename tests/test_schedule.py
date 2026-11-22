@@ -191,8 +191,8 @@ class SpeedUps(unittest.TestCase):
     def cap_entry(self, entry_id, agent_cap):
         return {"id": entry_id, "mechanism": "extra-agents", "agent_cap": agent_cap, "cost": {"class": "high"}, "basis": "stated", "risk": "spend"}
 
-    def x_cut(self, entry_id="xcut", cost="none"):
-        return {"id": entry_id, "task": "x", "seconds": 600, "basis": "measured subset", "risk": "less coverage", "savings_s": 2400, "cost": {"class": cost}}
+    def x_cut(self, entry_id="xcut", cost="none", seconds=600):
+        return {"id": entry_id, "task": "x", "seconds": seconds, "basis": "measured subset", "risk": "less coverage", "savings_s": 3000 - seconds, "cost": {"class": cost}}
 
     def result(self, plan=None, **kwargs):
         return dl.simulate(plan or self.plan(), self.rows, self.config, draws=100, now=2_000_000, **kwargs)
@@ -290,6 +290,16 @@ class SpeedUps(unittest.TestCase):
         self.assertEqual((combined["saves_s"], combined["commit_s"], combined["agent_cap"]), (2400, 1200, 3))
         self.assertEqual(combined["members"], ["agent-cap", "three", "xcut"])
         self.assertTrue(combined["needs_owner"], "it includes a high-cost cap entry")
+
+    def test_two_cuts_on_one_task_combine_to_the_shorter(self):
+        # why: "All of these" applies every cut; where two entries cut the same task the shorter one wins, not the later one.
+        # arithmetic (probe_plan): cap 3 entry; x cut to 1500 (entry `deep`) and to 2000 (entry `shallow`, listed after it).
+        #   All of them: cap 3 -> a, b, c in 0-1200; x at min(1500, 2000) = 1500 -> commit 1500, saves 3600 - 1500 = 2100.
+        #   Taking the later entry (2000) would give commit 2000.
+        # catches: the later cut overwriting the earlier, shorter one in the combination.
+        plan = self.probe_plan([self.cap_entry("three", 3), self.x_cut("deep", seconds=1500), self.x_cut("shallow", seconds=2000)])
+        combined = {e["id"]: e for e in self.result(plan)["speedups"]}["combined"]
+        self.assertEqual((combined["commit_s"], combined["saves_s"]), (1500, 2100))
 
     def test_a_cap_row_with_no_catalogue_entry_needs_the_owner(self):
         # why: review finding 4: simulate refuses to raise the cap without an authorized extra-agents entry, so the
