@@ -74,41 +74,77 @@ class PlanNotes(unittest.TestCase):
         self.assertIn("docs can start now", card)
         self.assertEqual(self.notes_of(json.loads(out), "b"), [], "other tasks carry an empty list, not the note")
 
-    def test_a_claim_the_scheduler_confirms_is_backed_and_one_it_does_not_is_claimed(self):
-        # why: notes are the agent's claims. One more agent really does save 600 s here, so a parallel note
-        #      claiming 600 is backed and one claiming 5000 is not; a cut of x claiming 300 saves nothing
-        #      (x is off the agent chain, b still ends at 2400), so it stays a claim.
-        # arithmetic: cap 1 commit 2400; cap 2: 1800 -> 600. Cutting b by 300: a 1200 + b 900 = 2100 vs x 1800 -> 2100,
-        #   saves 300 (backed). Cutting x by 300 -> 1500: commit stays 2400, saves 0.
-        # catches: trusting --saves-s, comparing it to the wrong what-if, or hiding the scheduler's own figure.
-        self.note("a", "--kind", "parallel", "--text", "backed", "--saves-s", "600")
+    def test_a_claim_is_backed_only_by_what_the_scheduler_finds_for_that_task(self):
+        # why: notes are the agent's claims. A cut is checked by shortening that task; a parallel claim by one more agent
+        #      moving *this task's* start earlier. Plan-wide gain does not back a note on a task that cannot use the agent.
+        # arithmetic (setUp plan): cap 1 commit 2400 (a 0-1200, b 1200-2400, x 0-1800). Cap 2: b starts at 0 and the plan
+        #   ends at 1800: saves 600, and only b starts earlier (a was at 0, x is a machine step).
+        #   b parallel 600: b starts earlier and the plan saves 600 -> backed. b parallel 5000: found 600 -> claim.
+        #   a parallel 600: a starts at 0 either way -> not backed, found 0, although the plan-wide gain is 600.
+        #   x parallel 600: a machine step takes no agent -> not backed, nothing to find (None), and it says why.
+        #   cut b by 300: a 1200 + b 900 = 2100 > x 1800 -> commit 2100, saves 300 -> backed. cut x by 300 -> 1500: commit
+        #   stays 2400 (b still ends last), saves 0 -> claim.
+        # catches: comparing every parallel note with the plan-wide gain (the machine note and a's note come back backed),
+        #   trusting --saves-s, or hiding the scheduler's own figure.
+        self.note("b", "--kind", "parallel", "--text", "backed", "--saves-s", "600")
         self.note("b", "--kind", "parallel", "--text", "too big", "--saves-s", "5000")
         self.note("b", "--kind", "cut", "--text", "shorter", "--saves-s", "300")
+        self.note("a", "--kind", "parallel", "--text", "already first", "--saves-s", "600")
         self.note("x", "--kind", "cut", "--text", "skip", "--saves-s", "300")
+        self.note("x", "--kind", "parallel", "--text", "more agents", "--saves-s", "600")
         _, out, _ = self.eta("--json")
         snapshot = json.loads(out)
-        (backed,) = self.notes_of(snapshot, "a")
-        self.assertEqual((backed["backed"], backed["scheduler_saves_s"]), (True, 600))
-        parallel_big, cut_b = self.notes_of(snapshot, "b")
+        parallel_ok, parallel_big, cut_b = self.notes_of(snapshot, "b")
+        self.assertEqual((parallel_ok["backed"], parallel_ok["scheduler_saves_s"]), (True, 600))
         self.assertEqual((parallel_big["backed"], parallel_big["scheduler_saves_s"]), (False, 600))
         self.assertEqual((cut_b["backed"], cut_b["scheduler_saves_s"]), (True, 300))
-        (cut_x,) = self.notes_of(snapshot, "x")
-        self.assertEqual((cut_x["backed"], cut_x["scheduler_saves_s"]), (False, 0))
+        (parallel_a,) = self.notes_of(snapshot, "a")
+        self.assertEqual((parallel_a["backed"], parallel_a["scheduler_saves_s"]), (False, 0))
+        self.assertIn("start", parallel_a["why_not_backed"])
+        cut_x, parallel_x = self.notes_of(snapshot, "x")
+        self.assertEqual((cut_x["backed"], cut_x["scheduler_saves_s"], cut_x["why_not_backed"]), (False, 0, None))
+        self.assertEqual((parallel_x["backed"], parallel_x["scheduler_saves_s"]), (False, None))
+        self.assertIn("machine", parallel_x["why_not_backed"])
 
     def test_page_marks_claims_apart_from_computed_numbers(self):
-        # why: the owner must see which figures the scheduler produced and which an agent asserted.
-        # catches: a note's saving rendered like a computed one.
+        # why: the owner must see which figures the scheduler produced and which an agent asserted. The scheduler can
+        #      only say "if the task saves N, the ETA moves by M": the page says "ETA effect checked", never
+        #      "confirmed", and the task saving stays marked as the agent's claim even when the ETA effect holds.
+        # catches: a note's saving rendered like a computed one, or the word "confirmed" on a claim.
         self.note("x", "--kind", "cut", "--text", "skip it", "--saves-s", "300")
-        self.note("a", "--kind", "parallel", "--text", "start now", "--saves-s", "600")
+        self.note("b", "--kind", "parallel", "--text", "start now", "--saves-s", "600")
+        self.note("x", "--kind", "parallel", "--text", "more agents", "--saves-s", "600")
         page = self.root / "eta.html"
         self.eta("--html", str(page))
         cards = Page(page.read_text()).cards
-        claimed = " ".join(cards["x"]["text"].split())
-        self.assertIn("claimed", claimed)
-        self.assertIn("scheduler finds 0 s", claimed)
-        backed = " ".join(cards["a"]["text"].split())
-        self.assertNotIn("claimed", backed)
-        self.assertIn("confirmed by the scheduler", backed)
+        unbacked = " ".join(cards["x"]["text"].split())
+        self.assertIn("claimed", unbacked)
+        self.assertNotIn("ETA effect checked", unbacked)
+        self.assertIn("ETA would move 0 s", unbacked)
+        self.assertRegex(unbacked, r"machine step.*no agent")
+        backed = " ".join(cards["b"]["text"].split())
+        self.assertIn("ETA effect checked", backed)
+        self.assertRegex(backed, r"claimed.*saves 10 min")
+        self.assertNotIn("confirmed", " ".join(c["text"] for c in cards.values()))
+
+    def test_claim_and_scheduler_that_round_to_the_same_text_show_seconds(self):
+        # why: review nit 8: "claimed saves 10 min; scheduler finds 10 min" reads as agreement when it is not.
+        # arithmetic: cut b by 610: a 1200 + b 590 = 1790 < x 1800 -> commit 1800, saves 600. Minutes: 610 s -> "10 min" and
+        #   600 s -> "10 min", so both print in seconds. A cut of 700 saves 600 as well but prints "12 min" and
+        #   "10 min": already different, no seconds needed.
+        # catches: always printing seconds, or never.
+        self.note("b", "--kind", "cut", "--text", "close call", "--saves-s", "610")
+        self.note("b", "--kind", "cut", "--text", "far call", "--saves-s", "700")
+        _, out, _ = self.eta("--json")
+        close, far = self.notes_of(json.loads(out), "b")
+        self.assertEqual((close["backed"], close["scheduler_saves_s"], far["scheduler_saves_s"]), (False, 600, 600))
+        page = self.root / "eta.html"
+        self.eta("--html", str(page))
+        card = " ".join(Page(page.read_text()).cards["b"]["text"].split())
+        self.assertIn("610 s", card)
+        self.assertIn("600 s", card)
+        self.assertIn("12 min", card)
+        self.assertNotIn("700 s", card)
 
     def test_note_kind_without_a_claim_is_just_text(self):
         # catches: requiring --saves-s, or inventing a scheduler figure for a plain note.
@@ -164,6 +200,85 @@ class PlanNotes(unittest.TestCase):
             self.note("a", "--kind", "note", "--text", text)
         _, out, _ = self.eta("--json")
         self.assertEqual([n["text"] for n in self.notes_of(json.loads(out), "a")], ["one", "two", "three"])
+
+    def test_plan_note_refuses_a_hand_written_plan_and_leaves_it_alone(self):
+        # why: review finding 5: a plan file with no `events` is a legacy ad-hoc plan; `eta` reads state from its
+        #      `.state.json` companion, so notes written into it would be invisible, and the file was silently reformatted.
+        # catches: rewriting the file (indent, agent_notes) or leaving a `.lock` beside it, or exiting 0.
+        folder = self.root / "legacy"
+        folder.mkdir()
+        legacy = folder / "p.json"
+        legacy.write_text(json.dumps({"id": "p", "cwd": str(self.root), "tasks": [{"id": "a", "model": "sonnet", "kind": "docs"}]}))
+        before, entries = legacy.read_bytes(), sorted(path.name for path in folder.iterdir())
+        code, _, err = run("plan", "note", str(legacy), "a", "--kind", "note", "--text", "hello")
+        self.assertEqual(code, 2, err)
+        self.assertIn("plan init", err)
+        self.assertEqual(legacy.read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), entries, "no .lock or temporary file appears")
+
+    MALFORMED = (
+        ({"text": "no kind"}, "kind"),
+        ({"kind": "cut", "text": "string claim", "saves_s": "600"}, "saves_s"),
+        ({"kind": "cut", "text": "negative", "saves_s": -5}, "saves_s"),
+        ({"kind": "cut", "text": "flag", "saves_s": True}, "saves_s"),
+        ({"kind": "note", "text": "claim on a plain note", "saves_s": 5}, "saves_s"),
+        ({"kind": "cut", "saves_s": 5}, "text"),
+        ({"kind": "cut", "text": "  "}, "text"),
+        ({"kind": "huh", "text": "unknown kind"}, "kind"),
+        ("just a string", "object"),
+    )
+
+    def test_storing_a_task_with_malformed_notes_is_refused_and_a_good_one_is_kept(self):
+        # why: review finding 6: `plan add --task-json` and `plan scope --add-json` took any agent_notes, and the next `eta`
+        #      crashed on them. Validate once, where they are stored, with the same rules as `plan note`.
+        # catches: storing a note the reader cannot use; a refusal that half-writes the plan; a validator that rejects good notes.
+        before = self.plan.read_text()
+        for note, reason in self.MALFORMED:
+            task = json.dumps({"id": "y", "model": "sonnet", "kind": "docs", "agent_notes": [note]})
+            code, _, err = run("plan", "add", str(self.plan), "y", "--task-json", task)
+            self.assertEqual(code, 2, (note, err))
+            self.assertIn(reason, err)
+            code, _, err = run("plan", "scope", str(self.plan), "--add-json", task, "--reason", "r")
+            self.assertEqual(code, 2, (note, err))
+        not_a_list = json.dumps({"id": "y", "model": "sonnet", "kind": "docs", "agent_notes": "oops"})
+        self.assertEqual(run("plan", "add", str(self.plan), "y", "--task-json", not_a_list)[0], 2)
+        self.assertEqual(self.plan.read_text(), before)
+        good = json.dumps({"id": "y", "model": "sonnet", "kind": "docs", "agent_notes": [{"kind": "cut", "text": "fine", "saves_s": 300, "at": 5}, {"kind": "note", "text": "plain", "saves_s": None}]})
+        code, _, err = run("plan", "add", str(self.plan), "y", "--task-json", good)
+        self.assertEqual(code, 0, err)
+        _, out, _ = self.eta("--json")
+        self.assertEqual([n["text"] for n in self.notes_of(json.loads(out), "y")], ["fine", "plain"])
+
+    def test_hand_edited_malformed_notes_are_skipped_with_a_visible_warning(self):
+        # why: review finding 6: plans are JSON files agents edit by hand; a bad note must not take `eta` down (it was a
+        #      KeyError traceback, exit 1). The good notes still show; each skipped one is named on the card and in the JSON.
+        # arithmetic: b holds four entries: [valid plain note, no kind, string saves_s, a bare string]; entries 2-4 are skipped.
+        #   a holds `agent_notes: "oops"`, not a list: skipped as a whole.
+        # catches: an uncaught KeyError/TypeError, skipping silently, or dropping the valid note along with the bad ones.
+        state = json.loads(self.plan.read_text())
+        tasks = {t["id"]: t for t in state["tasks"]}
+        tasks["b"]["agent_notes"] = [{"kind": "note", "text": "keep me", "saves_s": None, "at": 1}] + [m[0] for m in self.MALFORMED[:2]] + ["a bare string"]
+        tasks["a"]["agent_notes"] = "oops"
+        self.plan.write_text(json.dumps(state))
+        page = self.root / "eta.html"
+        code, out, err = self.eta("--json", "--html", str(page))
+        self.assertEqual(code, 0, err)
+        snapshot = json.loads(out)
+        by_id = {t["id"]: t for t in snapshot["tasks"]}
+        self.assertEqual([n["text"] for n in by_id["b"]["notes"]], ["keep me"])
+        self.assertEqual(len(by_id["b"]["note_warnings"]), 3)
+        for number in (2, 3, 4):
+            self.assertTrue(any(f"agent note {number} skipped" in w for w in by_id["b"]["note_warnings"]), (number, by_id["b"]["note_warnings"]))
+        self.assertEqual((by_id["a"]["notes"], len(by_id["a"]["note_warnings"])), ([], 1))
+        self.assertIn("agent_notes", by_id["a"]["note_warnings"][0])
+        self.assertEqual(by_id["x"]["note_warnings"], [], "a task with no problem carries an empty list")
+        parsed = Page(page.read_text())
+        self.assertEqual(parsed.snapshot, snapshot)
+        card = " ".join(parsed.cards["b"]["text"].split())
+        for warning in by_id["b"]["note_warnings"]:
+            self.assertIn(warning, card)
+        self.assertIn("keep me", card)
+        self.assertIn(by_id["a"]["note_warnings"][0], " ".join(parsed.cards["a"]["text"].split()))
 
 
 if __name__ == "__main__":

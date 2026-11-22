@@ -94,23 +94,66 @@ class Timeline(unittest.TestCase):
         self.assertEqual(dl.schedule(self.INDEPENDENT, self.INDEPENDENT_S, 2), 40)
 
 
-class CriticalPath(unittest.TestCase):
-    def test_critical_path_is_the_longest_dependency_chain(self):
-        # arithmetic: diamond a10 -> {b20, c30} -> d5: a-b-d = 35, a-c-d = 45. Chain: a, c, d.
-        # catches: following the first dependency listed (b), or picking by task count.
-        self.assertEqual(dl.critical_path(Timeline.DIAMOND, Timeline.DIAMOND_S), ["a", "c", "d"])
+class BindingPredecessor(unittest.TestCase):
+    def test_each_task_records_what_set_its_start(self):
+        # why: the critical path is the chain of binding predecessors; `bound_by` is the data it is read from.
+        # arithmetic, diamond at cap 1 (see Timeline): a 0-10 starts at 0, nothing bound it. b is ready at 10 and the
+        #   agent is free at 10: a dependency and a slot tie, the dependency wins -> a. c is ready at 10 but the agent
+        #   is held by b until 30 -> b (the slot). d is ready at 60 (c's end) and the agent frees at 60: tie -> c.
+        #   At cap 2: c takes the second agent at 10, bound by its dependency a; d is ready at 40 (c) and an agent is
+        #   free since 30, so only c holds it back -> c.
+        # catches: ignoring the slot (c bound by a), preferring the slot on a tie, or never recording it for a start at zero.
+        bound = lambda cap: {k: v["bound_by"] for k, v in dl.timeline(Timeline.DIAMOND, Timeline.DIAMOND_S, cap)["tasks"].items()}
+        self.assertEqual(bound(1), {"a": None, "b": "a", "c": "b", "d": "c"})
+        self.assertEqual(bound(2), {"a": None, "b": "a", "c": "a", "d": "c"})
 
-    def test_critical_path_does_not_depend_on_the_cap(self):
-        # why: it is the chain that bounds the plan however many agents there are; a task that only
-        #      queues for an agent is shown by its wait, not by this list.
-        # catches: marking the queued task c critical at cap 1 by folding the cap in.
-        self.assertEqual(dl.critical_path(Timeline.INDEPENDENT, Timeline.INDEPENDENT_S), ["z"])
-        self.assertEqual(dl.critical_path(Timeline.CHAIN, Timeline.CHAIN_S), ["a", "b", "c"])
+
+class CriticalPath(unittest.TestCase):
+    """The chain of binding predecessors back from the task that ends last: what really delays the commit."""
+
+    def test_diamond_at_cap_2_is_the_longest_dependency_chain(self):
+        # arithmetic: diamond a10 -> {b20, c30} -> d5 at cap 2: c ends at 40, b at 30; d waits for c: 40-45.
+        #   d bound by c, c bound by a: a, c, d.
+        # catches: following the first dependency listed (b), or picking by task count.
+        self.assertEqual(dl.critical_path(Timeline.DIAMOND, Timeline.DIAMOND_S, 2), ["a", "c", "d"])
+
+    def test_diamond_at_cap_1_runs_through_the_task_that_held_the_agent(self):
+        # arithmetic: cap 1: a 0-10, b 10-30, c 30-60 (the agent was b's until 30), d 60-65. d <- c <- b <- a.
+        #   Cutting b really does move the end, so b is on the path although c does not depend on it.
+        # catches: the pure dependency chain a, c, d at cap 1 (the owner-visible contradiction in review finding 1).
+        self.assertEqual(dl.critical_path(Timeline.DIAMOND, Timeline.DIAMOND_S, 1), ["a", "b", "c", "d"])
+
+    def test_independent_agent_tasks_queue_so_all_are_critical_at_cap_1_but_not_at_cap_2(self):
+        # arithmetic: cap 1: x 0-10, y 10-30, z 30-60; z <- y <- x. cap 2: x 0-10 and y 0-20 in parallel, z takes x's
+        #   agent at 10 and ends at 40, the plan's last end: z <- x. y ends at 20 and delays nothing.
+        # catches: the old answer ["z"] at cap 1 (y and x ignored), or y kept on the path at cap 2.
+        self.assertEqual(dl.critical_path(Timeline.INDEPENDENT, Timeline.INDEPENDENT_S, 1), ["x", "y", "z"])
+        self.assertEqual(dl.critical_path(Timeline.INDEPENDENT, Timeline.INDEPENDENT_S, 2), ["x", "z"])
+
+    def test_a_chain_is_the_path_at_any_cap(self):
+        # arithmetic: a10 -> b20 -> c30 ends at 60 at cap 1 and 2; each task is ready the moment its agent is free.
+        # catches: a path that depends on the cap for a plan with no parallelism.
+        for cap in (1, 2):
+            self.assertEqual(dl.critical_path(Timeline.CHAIN, Timeline.CHAIN_S, cap), ["a", "b", "c"], cap)
+
+    def test_a_machine_step_with_slack_is_off_the_path(self):
+        # arithmetic, cap 1: agents a and b are 1200 s each, machine x is 1800 s with no dependency. a 0-1200,
+        #   b 1200-2400, x 0-1800. The plan ends at 2400, set by b queueing behind a; x has 600 s of slack.
+        # catches: x on the path (the old longest-chain answer ["x"]) while its cut saves nothing.
+        tasks = [agent("a"), agent("b"), machine("x")]
+        self.assertEqual(dl.critical_path(tasks, {"a": 1200, "b": 1200, "x": 1800}, 1), ["a", "b"])
 
     def test_machine_step_on_the_chain_counts(self):
-        # arithmetic: agent a 60 -> machine n 100 = 160 beats the independent agent b 60.
+        # arithmetic: agent a 60 -> machine n 100 ends at 160; agent b (60 s) runs 60-120 beside it. n <- a.
         tasks = [agent("a"), agent("b"), machine("n", "a")]
-        self.assertEqual(dl.critical_path(tasks, {"a": 60, "b": 60, "n": 100}), ["a", "n"])
+        self.assertEqual(dl.critical_path(tasks, {"a": 60, "b": 60, "n": 100}, 1), ["a", "n"])
+
+    def test_a_finished_task_at_the_head_of_the_chain_is_left_out(self):
+        # why: done tasks have duration 0; they bound the next start at 0 and are not work left to do.
+        # arithmetic: done 0 s -> next 50 s: next 0-50, bound by done. Path without zero-length tasks: next.
+        # catches: dropping the `duration > 0` filter (the path would read ["done", "next"]).
+        tasks = [agent("done"), agent("next", "done")]
+        self.assertEqual(dl.critical_path(tasks, {"done": 0, "next": 50}, 1), ["next"])
 
 
 class SpeedUps(unittest.TestCase):
@@ -138,6 +181,19 @@ class SpeedUps(unittest.TestCase):
         base.update(extra)
         return base
 
+    def probe_plan(self, tradeoffs):
+        # cap 1: agents a, b, c at 1200 s each queue to 3600; machine x is 3000 s beside them.
+        #   cap 2: a, b 0-1200, c 1200-2400; x 3000 -> 3000 (saves 600). cap 3: all three 0-1200; x 3000 -> 3000 (saves 600).
+        return {"cwd": str(self.root), "deliverable": "demo", "forecast_method": "ridge", "tasks": [
+            agent("a"), agent("b"), agent("c"), {"id": "x", "type": "machine", "seconds": 3000, "basis": "measured"}],
+            "tradeoffs": tradeoffs}
+
+    def cap_entry(self, entry_id, agent_cap):
+        return {"id": entry_id, "mechanism": "extra-agents", "agent_cap": agent_cap, "cost": {"class": "high"}, "basis": "stated", "risk": "spend"}
+
+    def x_cut(self, entry_id="xcut", cost="none"):
+        return {"id": entry_id, "task": "x", "seconds": 600, "basis": "measured subset", "risk": "less coverage", "savings_s": 2400, "cost": {"class": cost}}
+
     def result(self, plan=None, **kwargs):
         return dl.simulate(plan or self.plan(), self.rows, self.config, draws=100, now=2_000_000, **kwargs)
 
@@ -148,7 +204,8 @@ class SpeedUps(unittest.TestCase):
         schedule = self.result()["schedule"]
         self.assertEqual(schedule["makespan_s"], 2400)
         self.assertEqual(schedule["agent_cap"], 1)
-        self.assertEqual(schedule["critical_path"], ["x"])
+        # critical path at cap 1: b ends last (2400), held back by a: a, b. Machine step x has 600 s of slack.
+        self.assertEqual(schedule["critical_path"], ["a", "b"])
         self.assertEqual(schedule["ticks_s"], [0, 600, 1200, 1800, 2400])
         got = {k: (v["start_s"], v["end_s"], v["wait_s"], v["start_with_extra_agent_s"]) for k, v in schedule["tasks"].items()}
         self.assertEqual(got, {"a": (0, 1200, 0, 0), "b": (1200, 2400, 1200, 0), "x": (0, 1800, 0, 0)})
@@ -218,6 +275,61 @@ class SpeedUps(unittest.TestCase):
         plan = {"cwd": str(self.root), "tasks": [{"id": "build", "type": "machine", "what": "build"}]}
         (task,) = dl.simulate(plan, [], {}, draws=100, now=2_000_000, timings=timings)["tasks"]
         self.assertEqual((task["commit"], task["p50"], task["p80"]), (200, 300, 400))
+
+    def test_combined_is_computed_at_the_highest_cap_among_its_members(self):
+        # why: review finding 3: "All of these" listed a cap-3 entry but was computed at cap 2.
+        # arithmetic (probe_plan): base 3600. Cap 2 saves 3600 - 3000 = 600, cap 3 saves 600 (x ends last at 3000), the x
+        #   cut alone saves 0 (the agents still queue to 3600). All three: cap 3 and x at 600 s -> max(1200, 600) = 1200:
+        #   saves 2400, commit 1200. Computed at cap 2 it would be max(2400, 600) = 2400 (saves 1200).
+        # catches: building the combination at cap + 1 whatever its members need.
+        result = self.result(self.probe_plan([self.cap_entry("three", 3), self.x_cut()]))
+        by_id = {e["id"]: e for e in result["speedups"]}
+        self.assertEqual(set(by_id), {"agent-cap", "three", "xcut", "combined"})
+        self.assertEqual((by_id["agent-cap"]["saves_s"], by_id["three"]["saves_s"], by_id["xcut"]["saves_s"]), (600, 600, 0))
+        combined = by_id["combined"]
+        self.assertEqual((combined["saves_s"], combined["commit_s"], combined["agent_cap"]), (2400, 1200, 3))
+        self.assertEqual(combined["members"], ["agent-cap", "three", "xcut"])
+        self.assertTrue(combined["needs_owner"], "it includes a high-cost cap entry")
+
+    def test_a_cap_row_with_no_catalogue_entry_needs_the_owner(self):
+        # why: review finding 4: simulate refuses to raise the cap without an authorized extra-agents entry, so the
+        #      default row must say needs_owner and carry the high cost class such an entry has to declare.
+        # catches: the row claiming needs_owner False and cost none (an agent reads the JSON, not the prose).
+        row = {e["id"]: e for e in self.result(self.probe_plan([]))["speedups"]}["agent-cap"]
+        self.assertEqual((row["needs_owner"], row["cost"], row["catalogue_id"]), (True, {"class": "high"}, None))
+        self.assertEqual((row["agent_cap"], row["saves_s"]), (2, 600))
+
+    def test_a_catalogue_entry_for_the_next_cap_replaces_the_default_row_and_a_higher_one_adds_a_row(self):
+        # arithmetic (probe_plan): cap 2 saves 600; the cap 3 entry saves 600 as well, x ends last at 3000. Two cap
+        #   entries are rows 'agent-cap' (named by the entry `two`) and `three`; neither alone beats 600, so no 'combined'.
+        # catches: ignoring extra-agents entries (the default row keeps catalogue_id None, `three` is missing), or
+        #   adding the cap + 1 entry as a second row beside the default one.
+        result = self.result(self.probe_plan([self.cap_entry("two", 2), self.cap_entry("three", 3)]))
+        by_id = {e["id"]: e for e in result["speedups"]}
+        self.assertEqual(set(by_id), {"agent-cap", "three"})
+        self.assertEqual((by_id["agent-cap"]["catalogue_id"], by_id["agent-cap"]["cost"], by_id["agent-cap"]["needs_owner"]), ("two", {"class": "high"}, True))
+        self.assertEqual((by_id["three"]["agent_cap"], by_id["three"]["cost"], by_id["three"]["needs_owner"], by_id["three"]["saves_s"]), (3, {"class": "high"}, True, 600))
+
+    def test_a_cut_needs_the_owner_only_when_its_cost_is_high(self):
+        # arithmetic (probe_plan): the x cut to 600 s saves 0 at cap 1 (a, b, c still queue to 3600); rows with no saving stay in the JSON.
+        # catches: needs_owner False for every cut, or True for every cut.
+        costly = {e["id"]: e for e in self.result(self.probe_plan([self.x_cut(cost="high")]))["speedups"]}["xcut"]
+        free = {e["id"]: e for e in self.result(self.probe_plan([self.x_cut(cost="none")]))["speedups"]}["xcut"]
+        self.assertEqual((costly["needs_owner"], costly["cost"]), (True, {"class": "high"}))
+        self.assertEqual((free["needs_owner"], free["cost"]), (False, {"class": "none"}))
+
+    def test_no_defer_removes_the_cut_on_that_task_from_the_what_ifs(self):
+        # why: --no-defer x says x must not be shortened; the faster card must not suggest it.
+        # arithmetic: plan(): without the flag the rows are agent-cap, x-subset, combined (see above); with x protected only agent-cap is left, and one row makes no combination.
+        # catches: ignoring --no-defer in the what-ifs (x-subset and combined stay).
+        self.assertEqual({e["id"] for e in self.result(no_defer=["x"])["speedups"]}, {"agent-cap"})
+
+    def test_every_what_if_names_the_durations_it_used(self):
+        # why: review nit 9: the rail uses medians and the savings use commit cuts; the data says which.
+        # catches: a row without the basis (an agent cannot tell the two clocks apart).
+        rows = self.result()["speedups"]
+        self.assertEqual({e["duration_basis"] for e in rows}, {"commit cuts"})
+        self.assertEqual(len(rows), 3)
 
     def test_existing_json_keys_keep_their_meaning(self):
         # why: only additions this round.

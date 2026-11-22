@@ -433,6 +433,33 @@ class CalibrationHtml(unittest.TestCase):
         self.assertIn("thin history", card)
         self.assertIn("0 with an estimate", card)
 
+    def test_every_page_keeps_room_under_the_last_card_for_mobile_navigation(self):
+        # why: owner request: T3's mobile navigation covers the foot of the page; about 6rem under the last card clears it.
+        # catches: dropping the bottom padding from the shared stylesheet the calibration page uses.
+        target = self.root / "cal.html"
+        self.cal("--html", str(target))
+        css = re.search(r"<style>(.*?)</style>", target.read_text(), re.S).group(1)
+        (main,) = re.findall(r"(?:^|\n|\})main\{([^{}]*)\}", css)
+        self.assertRegex(main, r"padding-block-end:\s*6rem")
+
+    def test_a_group_with_estimates_only_in_the_earlier_window_says_so(self):
+        # why: review nit 10: the group is kept because the earlier window had estimates, but its card was a bare heading,
+        #      losing this window's run count that the old table row carried.
+        # arithmetic: sonnet/implementation has one estimated run 10 days ago (earlier window) and two runs this week with
+        #   no estimate: this window n 2, n_estimated 0 -> "2 runs, none estimated this window".
+        # catches: a card with only a heading and flags, or the line shown when this window does have estimates.
+        learn.append_observations(self.state, [
+            obs("sonnet", "implementation", age_days=10, actual=100, p80=200),
+            obs("sonnet", "implementation", age_days=1, actual=100),
+            obs("sonnet", "implementation", age_days=2, actual=120),
+        ])
+        target = self.root / "cal.html"
+        self.cal("--html", str(target))
+        page = Page(target.read_text())
+        card = " ".join(page.groups[("sonnet", "implementation")]["text"].split())
+        self.assertIn("2 runs, none estimated this window", card)
+        self.assertNotIn("none estimated", " ".join(page.groups[("opus", "fix")]["text"].split()))
+
     def test_hostile_pointer_is_text_and_page_is_offline(self):
         # why: pointers come from transcripts and vigil labels: untrusted text.
         # catches: interpolating a pointer unescaped into a card.

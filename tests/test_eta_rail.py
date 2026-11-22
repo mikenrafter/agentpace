@@ -135,11 +135,14 @@ class EtaRail(unittest.TestCase):
         self.assertEqual(snapshot["schedule"]["ticks_s"], [0, 600, 1200, 1800, 2400])
 
     def test_cards_say_when_each_task_runs_and_why_it_waits_or_is_critical(self):
-        # arithmetic: a 0 s -> 20 min, b 20 min -> 40 min, x 0 s -> 30 min. Critical path = the longest dependency chain = x alone.
+        # arithmetic: a 0 s -> 20 min, b 20 min -> 40 min, x 0 s -> 30 min. The plan ends at 40 min, set by b queueing behind a
+        #   at cap 1: the critical path is a, b. x is a machine step with 10 min of slack: cutting it saves nothing.
         #   b waits 20 min for the agent (queue, not dependency); one more agent starts it at 0 s.
-        # catches: formatting the end as a duration, calling the queued task critical, no wait badge.
-        page, _ = self.page()
+        # catches: formatting the end as a duration, badging x (the old longest-chain path) while the faster card says
+        #   cutting x has no effect, leaving a off the path, no wait badge.
+        page, snapshot = self.page()
         text = {k: " ".join(v["text"].split()) for k, v in page.cards.items()}
+        self.assertEqual(snapshot["schedule"]["critical_path"], ["a", "b"])
         self.assertIn("Runs 0 s → 20 min", text["a"])
         self.assertIn("Runs 20 min → 40 min", text["b"])
         self.assertIn("Runs 0 s → 30 min", text["x"])
@@ -147,8 +150,10 @@ class EtaRail(unittest.TestCase):
         self.assertNotIn("waits for a free agent", text["a"])
         self.assertNotIn("waits for a free agent", text["x"], "a machine step never waits for an agent")
         self.assertIn("One more agent would start this at 0 s", text["b"])
-        self.assertIn("critical path", text["x"])
-        self.assertNotIn("critical path", text["a"] + text["b"])
+        self.assertIn("critical path", text["a"])
+        self.assertIn("critical path", text["b"])
+        self.assertNotIn("critical path", text["x"])
+        self.assertIn("Critical path: a → b", " ".join(page.roles["summary"].split()))
 
     def test_faster_card_lists_computed_savings_with_the_new_commit(self):
         # arithmetic (see demo): cap 2 saves 600 s -> commit 1800 s; the x cut alone saves 0; both save 1200 s -> commit 1200 s.
@@ -160,6 +165,8 @@ class EtaRail(unittest.TestCase):
         self.assertRegex(card, r"All of these.*20 min\s*→\s*20 min")
         self.assertIn("Computed by the scheduler", card)
         self.assertIn("No effect on the commit", card)
+        self.assertRegex(card, r"Agent cap 2\s+needs owner\s+−10 min", "no catalogue entry: raising the cap needs the owner (finding 4)")
+        self.assertRegex(card, r"All of these\s+needs owner\s+−20 min", "the combination includes the cap row")
         self.assertIn("x-subset", card)
         self.assertEqual([e["saves_s"] for e in snapshot["speedups"] if e["id"] in ("agent-cap", "combined")], [600, 1200])
 
@@ -178,7 +185,7 @@ class EtaRail(unittest.TestCase):
         self.assertEqual(page.snapshot, printed)
         for key in ("schedule", "speedups"):
             self.assertIn(key, printed)
-        self.assertTrue(all("p80" in t and "notes" in t for t in printed["tasks"]))
+        self.assertTrue(all("p80" in t and "notes" in t and "note_warnings" in t for t in printed["tasks"]))
 
     def test_cards_show_the_per_task_p80(self):
         # arithmetic: constant history -> a's P80 is 1200 s = 20 min; x is exactly 1800 s = 30 min.
@@ -186,6 +193,25 @@ class EtaRail(unittest.TestCase):
         page, _ = self.page()
         self.assertRegex(" ".join(page.cards["a"]["text"].split()), r"P80\s+20 min")
         self.assertRegex(" ".join(page.cards["x"]["text"].split()), r"P80\s+30 min")
+
+    def test_the_page_says_which_figures_are_medians_and_which_are_commit_cuts(self):
+        # why: review nit 9: the rail and "Runs a -> b" use median durations; the savings and the commit use commit cuts.
+        #      In the demo the two clocks agree (every duration is a constant), so the page must say it, not rely on a difference.
+        # catches: leaving the reader to guess why the rail's end and the commit can differ.
+        page, _ = self.page()
+        timeline = " ".join(page.roles["tasks"].split())
+        faster = " ".join(page.roles["speedups"].split())
+        self.assertIn("median durations", timeline)
+        self.assertIn("commit cuts", faster)
+        self.assertNotIn("commit cuts", timeline)
+
+    def test_every_page_keeps_room_under_the_last_card_for_mobile_navigation(self):
+        # why: owner request: T3's mobile navigation covers the foot of the page; about 6rem under the last card clears it.
+        # catches: dropping the bottom padding, or putting it on a card instead of the page.
+        self.page()
+        css = re.search(r"<style>(.*?)</style>", (self.root / "eta.html").read_text(), re.S).group(1)
+        (main,) = re.findall(r"(?:^|\n|\})main\{([^{}]*)\}", css)
+        self.assertRegex(main, r"padding-block-end:\s*6rem")
 
 
 if __name__ == "__main__":
