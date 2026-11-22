@@ -350,6 +350,9 @@ def cmd_eta(args):
         for task in result['tasks']:
             if task['needs_owner']: print(f"  {task['id']}: requested appetite needs_owner=true; configured cut retained")
         print('What changes this ETA: scope, running-task tail support, host/contention, owner-authorized policy changes.')
+    if args.html:
+        from agentpace import eta_html, state_html
+        state_html.write(args.html, eta_html.render(result, plan, keep=args.keep, no_defer=args.no_defer))
     return 0
 
 
@@ -366,6 +369,7 @@ def add_command(commands):
     parser.add_argument('--data', default=str(paths.home()/'local-runs.jsonl'))
     parser.add_argument('--timings', default=str(paths.home()/'machine-times.jsonl'))
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--html', metavar='PATH', help='also write the ETA as one self-contained HTML page with the --json snapshot embedded')
     parser.add_argument('--allow-spend',action='append',default=[])
     parser.add_argument('--owner-grant',help='verbatim owner quote authorizing the requested override; logged, never invented')
     parser.add_argument('--ledger',default=str(paths.vigil_ledger()))

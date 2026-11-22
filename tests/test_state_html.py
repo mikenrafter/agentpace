@@ -107,12 +107,12 @@ class EtaHtml(unittest.TestCase):
                    "--timings", self.missing, "--ledger", self.missing, *extra)
 
     def basic_tasks(self):
-        # compile 100 s then test 20 s after it: commit = 100 + 20 = 120 s ("2 min"); setup is done.
+        # compile 3000 s then test 600 s after it: commit = 3000 + 600 = 3600 s -> "60 min"; setup is done.
         return [
-            {"id": "setup", "type": "machine", "seconds": 600, "basis": "measured", "status": "done",
-             "started_at": 1, "ended_at": 601, "actual_s": 600},
-            {"id": "compile", "type": "machine", "seconds": 100, "basis": "measured", "depends_on": ["setup"]},
-            {"id": "test", "type": "wait", "seconds": 20, "basis": "stated", "depends_on": ["compile"]},
+            {"id": "setup", "type": "machine", "seconds": 1200, "basis": "measured", "status": "done",
+             "started_at": 1, "ended_at": 1201, "actual_s": 1200},
+            {"id": "compile", "type": "machine", "seconds": 3000, "basis": "measured", "depends_on": ["setup"]},
+            {"id": "test", "type": "wait", "seconds": 600, "basis": "stated", "depends_on": ["compile"]},
         ]
 
     def test_embedded_snapshot_is_what_json_prints(self):
@@ -185,15 +185,15 @@ class EtaHtml(unittest.TestCase):
 
     def test_first_screen_carries_commit_median_and_slip(self):
         # why: the page is read in five seconds: commit, median and slip lead.
-        # arithmetic: commit = 100 + 20 = 120 s -> render.duration "2 min"; machine/wait seconds are
-        #   exact so P50 = P80 = 120 s as well.
+        # arithmetic: commit = 3000 + 600 = 3600 s -> render.duration "60 min"; machine/wait seconds
+        #   are exact so P50 = P80 = 3600 s as well.
         # catches: putting task cards first, or dropping the slip (P80) figure.
         out_file = self.root / "eta.html"
         self.eta(self.plan(self.basic_tasks()), "--html", str(out_file))
         summary = " ".join(Page(out_file.read_text()).roles["summary"].split())
-        self.assertRegex(summary, r"Commit\s+2 min")
-        self.assertRegex(summary, r"Median\s+2 min")
-        self.assertRegex(summary, r"Slip \(P80\)\s+2 min")
+        self.assertRegex(summary, r"Commit\s+60 min")
+        self.assertRegex(summary, r"Median\s+60 min")
+        self.assertRegex(summary, r"Slip \(P80\)\s+60 min")
         self.assertIn("pilot-apk", summary)
 
     def test_one_card_per_open_task_and_finished_tasks_are_collapsed(self):
@@ -205,21 +205,34 @@ class EtaHtml(unittest.TestCase):
         self.assertEqual({k: v["finished"] for k, v in cards.items()},
                          {"setup": True, "compile": False, "test": False})
         text = " ".join(cards["compile"]["text"].split())
-        for fragment in ("todo", "machine", "aggressive", "P30", "100 s"):
+        for fragment in ("todo", "machine", "aggressive", "P30", "50 min"):
             self.assertIn(fragment, text)
-        self.assertIn("600 s", " ".join(cards["setup"]["text"].split()))
+        done_text = " ".join(cards["setup"]["text"].split())
+        self.assertIn("20 min", done_text)
+        # a finished task has no commit cut or median left to show; "0 s" there would read as a forecast.
+        self.assertNotIn("Commit cut", done_text)
 
     def test_agent_task_cards_name_model_and_kind(self):
         # why: for an agent task the person wants to know which model and what kind of work.
         # catches: reading model and kind from the forecast summary, which does not carry them.
+        from agentpace import local_runs as lr
+
         out_file = self.root / "eta.html"
         directory = self.root / "agent"
         directory.mkdir()
         plan = directory / "ship.json"
         plan.write_text(json.dumps({"cwd": str(directory), "tasks": [
             {"id": "write", "model": "sonnet", "kind": "implementation"}]}))
-        code, _, _ = self.eta(plan, "--html", str(out_file))
-        self.assertEqual(code, 0)
+        # twelve finished reference runs (the forecaster needs ten) of 600 s each; the forecast method is pinned so the home
+        # directory's model policy cannot change it.
+        data = directory / "runs.jsonl"
+        data.write_text("".join(json.dumps(lr.make_row(start=1000 * i, end=1000 * i + 600, model="sonnet", kind="implementation",
+                                                       project=str(directory), session=f"s{i}")) + "\n" for i in range(1, 13)))
+        config = directory / "config.json"
+        config.write_text(json.dumps({"forecast_method": "ridge"}))
+        code, _, err = run("eta", str(plan), "--now", "100000", "--config", str(config), "--data", str(data),
+                           "--timings", self.missing, "--ledger", self.missing, "--html", str(out_file))
+        self.assertEqual(code, 0, err)
         text = " ".join(Page(out_file.read_text()).cards["write"]["text"].split())
         self.assertIn("sonnet", text)
         self.assertIn("implementation", text)
@@ -333,6 +346,11 @@ class CalibrationHtml(unittest.TestCase):
         page = Page(target.read_text())
         for role in ("coverage", "misses", "flags", "new"):
             self.assertIn(role, page.roles)
+        # headline: P80 hits 0/5 (opus) + 1/1 (haiku, 40 s <= 60 s) = 1/6 = 17%; each run once, so the
+        #   per-kind rows must not be added on top of the per-model rollups.
+        summary = " ".join(page.roles["summary"].split())
+        self.assertIn("1/6", summary)
+        self.assertIn("17%", summary)
         coverage = " ".join(page.roles["coverage"].split())
         self.assertIn("opus", coverage)
         self.assertIn("0/5", coverage)

@@ -118,11 +118,20 @@ def _fill(html: str, element_id: str, text: str) -> str:
     return filled
 
 
+def json_block(data: Any) -> str:
+    """JSON that is safe inside a `<script>` element and parses back to `data`.
+
+    `</` would end the element early. `<!--` followed by `<script` would put a browser's script
+    parser in the double-escaped state, where the real end tag no longer ends it. Both stay valid
+    JSON escapes.
+    """
+    return json.dumps(data, separators=(",", ":")).replace("</", "<\\/").replace("<!--", "\\u003c!--")
+
+
 def embed(html: str, data: dict[str, Any]) -> str:
     start = html.index(START) + len(START)
     end = html.index(END, start)
-    block = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
-    return f"{html[:start]}{block}{html[end:]}"
+    return f"{html[:start]}{json_block(data)}{html[end:]}"
 
 
 def build(html: str, data: dict[str, Any]) -> str:

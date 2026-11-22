@@ -15,6 +15,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - `t3_history.read_database` rows carry `delegated_task_id` (T3's `payload.delegatedTaskId` on a follow-up run).
 - `estimate-run --vigil-meta` refuses a model or kind the shell would split or glob (exit 2).
 - learn scores a hold's `--meta p50`/`p80` as the run's estimate (`estimate_source` `agentpace`, with the `estimator` tag). calibration reports a hand-set `--expect-s` with no estimate behind it apart, as a `ceiling` and its hit rate, and keeps it out of P80 coverage and loss.
+- `agentpace eta --html PATH` and `agentpace calibration --html PATH` write one self-contained page (inline CSS, host theme variables with fallbacks, no network) with the `--json` output embedded in `<script id="agentpace-state" type="application/json">`. eta shows the commit, median and slip first, then a card per open task and finished tasks collapsed; calibration shows coverage, the largest misses with pointers, drift flags and thin-history models. The calibration page is written owner-only like its Markdown report. `site.json_block` is now the one escape for JSON in a script element and also escapes `<!--`.
 
 ### Changed
 

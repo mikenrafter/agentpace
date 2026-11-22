@@ -432,7 +432,10 @@ persistent deliverable plan, not a new guessed task list on every ask.
 ```text
 agentpace eta /project.research/plans/pilot.json --json
 agentpace eta /project.research/plans/pilot.json
+agentpace eta /project.research/plans/pilot.json --html eta.html
 ```
+
+`--html PATH` also writes one self-contained page (inline CSS, no network; the host theme's CSS variables with fallbacks) for a preview: the commit, median and slip first, a card per open task, finished tasks collapsed. The `--json` result is embedded unchanged in `<script id="agentpace-state" type="application/json">`, so an agent can read the page's snapshot instead of calling `eta` again. Stdout is unchanged.
 
 Tasks have `status` of `todo`, `running`, `done`, or `removed`. Running tasks
 need `started_at`; done tasks retain `actual_s` and start/end. Scope events keep
@@ -641,9 +644,11 @@ A missing source is reported as `absent`; a source that fails is reported as `er
 ## calibration
 
 ```text
-agentpace calibration [--since 7d] [--json | --md] [--out FILE] [--top N] [--state DIR] [--at TIME]
+agentpace calibration [--since 7d] [--json | --md] [--out FILE] [--html PATH] [--top N] [--state DIR] [--at TIME]
 ```
 
 Reads the observation store and compares runs finished in the last `--since` window (`7d`, `12h`, `2w`) with everything earlier, per model and kind and per model overall: mean pinball loss of the estimates made at dispatch, coverage of P50/P80/P90 (the share of actuals at or under each estimate; targets 50/80/90), models and kinds with little history, the largest misses with pointers, and drift flags (`p80-undercoverage`, `loss-up`). Usage-wait runs, orchestrator turns, machine jobs and check-ins are counted and not scored, and so are vigil holds that could not be tied to exactly one run, or whose run had ended before the hold started (the report lists them by reason, `target-cancelled` apart from `link-failed`). A group with no estimate shows no loss, not zero. A hand-set ceiling (a `--expect-s` with no estimator output behind it) is never in those figures: the report counts it (`estimates.ceiling`) and its own section says how often runs finished within it (`ceiling` in each group's stats), because a loose alarm that every run meets is not a calibrated P80. `--top` must be at least 1 and `--at` a finite time. The default output is Markdown; `--out` writes it to a file, owner-only (0600).
+
+`--html PATH` also writes the report as one self-contained page (owner-only, 0600, like `--out`): coverage, the largest misses with pointers, drift flags and thin-history models as cards, with the `--json` report embedded in `<script id="agentpace-state" type="application/json">`. Stdout is unchanged.
 
 The report is evidence for a reader. It never changes an estimator, and its flags are thresholds, not rules.

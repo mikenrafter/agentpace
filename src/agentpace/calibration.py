@@ -436,6 +436,10 @@ def cmd_calibration(args: Any) -> int:
         print(f"wrote {target}")
     else:
         print(text, end="")
+    if args.html:
+        from agentpace import calibration_html
+
+        _write_private(Path(args.html), calibration_html.render(report))
     return 0
 
 
@@ -445,6 +449,7 @@ def add_command(commands: Any) -> None:
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="print JSON")
     output.add_argument("--md", action="store_true", help="print Markdown (default)")
+    parser.add_argument("--html", metavar="PATH", help="also write the report as one self-contained HTML page (owner-only) with the --json report embedded")
     parser.add_argument("--out", help="write the report to this file instead of printing it")
     parser.add_argument("--top", type=int, default=DEFAULT_TOP, help="how many largest misses to list (default: %(default)s)")
     parser.add_argument("--state", help="state directory (default: AGENTPACE_STATE or the XDG state dir)")
