@@ -250,6 +250,18 @@ class PlanNotes(unittest.TestCase):
         _, out, _ = self.eta("--json")
         self.assertEqual([n["text"] for n in self.notes_of(json.loads(out), "y")], ["fine", "plain"])
 
+    def test_a_machine_task_added_without_a_model_has_none(self):
+        # why: reported by the Edge agent (2026-11-22): `plan add <p> push-integrate --type machine --seconds 300` stored
+        #      model "sol" and kind "implementation" (the agent defaults), and the eta card showed "sol · implementation"
+        #      on a machine step. Agent defaults belong to agent tasks only.
+        # catches: defaults applied to machine/wait tasks; dropping the agent defaults that existing plans rely on.
+        self.assertEqual(run("plan", "add", str(self.plan), "m1", "--type", "machine", "--seconds", "300")[0], 0)
+        self.assertEqual(run("plan", "add", str(self.plan), "g1")[0], 0)
+        tasks = {t["id"]: t for t in json.loads(self.plan.read_text())["tasks"]}
+        self.assertNotIn("model", tasks["m1"])
+        self.assertNotIn("kind", tasks["m1"])
+        self.assertEqual((tasks["g1"]["model"], tasks["g1"]["kind"]), ("sol", "implementation"))
+
     def test_hand_edited_malformed_notes_are_skipped_with_a_visible_warning(self):
         # why: review finding 6: plans are JSON files agents edit by hand; a bad note must not take `eta` down (it was a
         #      KeyError traceback, exit 1). The good notes still show; each skipped one is named on the card and in the JSON.
