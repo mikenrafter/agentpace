@@ -54,6 +54,7 @@ h1{font-size:1.1rem;font-weight:600}
 h2{font-size:.95rem;font-weight:600;margin-bottom:.5rem}
 h3{font-size:.95rem;font-weight:600}
 .muted{color:var(--s-muted);font-size:.85rem}
+.note{font-size:.88rem;margin-top:.3rem}
 .figures{display:flex;flex-wrap:wrap;gap:.5rem 1.75rem;margin:.6rem 0 .4rem}
 .figure{display:grid}
 .figure span{color:var(--s-muted);font-size:.8rem}

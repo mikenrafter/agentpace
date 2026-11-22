@@ -45,7 +45,7 @@ def _task_notes(task: Mapping[str, Any], applied: Sequence[Mapping[str, Any]], k
     parts = []
     for entry in applied:
         parts.append(
-            f'<p><span class="badge accent">Shortcut applied</span> saves {esc(fmt.duration(entry["savings_s"]))} on the task '
+            f'<p class="note"><span class="badge accent">Shortcut applied</span> saves {esc(fmt.duration(entry["savings_s"]))} on the task '
             f'(ETA {esc(fmt.duration(entry["eta_savings_s"]))}); risk: {esc(entry["risk"])}; basis: {esc(entry["basis"])}</p>'
         )
     if kept:
