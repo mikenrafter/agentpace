@@ -43,7 +43,7 @@ _CSS = """
     --s-warn:var(--chart-4,#fbbf24);
   }
 }
-body{margin:0;font-family:var(--s-font);color:var(--s-text);line-height:1.45}
+body{margin:0;font-family:var(--s-font);color:var(--s-text);line-height:1.45;font-size:14.5px}
 main{display:grid;gap:.75rem;padding-block:.75rem;min-width:0}
 .card{background:var(--s-card);color:var(--s-text);border:1px solid var(--s-border);
   border-radius:var(--s-radius);padding:1rem;min-width:0;overflow-wrap:anywhere}
