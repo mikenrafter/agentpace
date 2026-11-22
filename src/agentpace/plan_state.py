@@ -203,7 +203,9 @@ def cmd_plan(args):
     action=args.plan_action
     if action=='init': result=create(path,load(args.source) if args.source else dict(id=path.stem,cwd=str(Path(args.cwd).resolve()),tasks=[]),now)
     elif action=='add':
-        task=json.loads(args.task_json) if args.task_json else dict(id=args.task,model=args.model,kind=args.kind,type=args.type,depends_on=args.depends_on)
+        task=json.loads(args.task_json) if args.task_json else dict(id=args.task,type=args.type,depends_on=args.depends_on,
+            # Agent defaults apply to agent tasks only; a machine or wait step has no model unless one is given.
+            **{k:v for k,v in (('model',args.model or ('sol' if args.type=='agent' else None)),('kind',args.kind or ('implementation' if args.type=='agent' else None))) if v})
         if args.seconds is not None: task.update(seconds=args.seconds,basis=args.basis)
         result=scope(path,added=task,reason=args.reason,now=now)
     elif action in ('start','done'): result=update(path,action,args.task,now,took=args.took)
@@ -225,7 +227,7 @@ def add_commands(commands):
         if action in ('add','start','done'): parser.add_argument('task'); parser.add_argument('--took',type=float)
         if action=='note': parser.add_argument('task'); parser.add_argument('--kind',choices=NOTE_KINDS,required=True); parser.add_argument('--text',required=True); parser.add_argument('--saves-s',type=float,help='claimed seconds saved on the ETA; eta checks it against the scheduler')
         if action=='add':
-            parser.add_argument('--task-json'); parser.add_argument('--model',default='sol'); parser.add_argument('--kind',default='implementation'); parser.add_argument('--type',default='agent',choices=('agent','machine','wait')); parser.add_argument('--seconds',type=float); parser.add_argument('--basis',default=''); parser.add_argument('--depends-on',action='append',default=[]); parser.add_argument('--reason',default='')
+            parser.add_argument('--task-json'); parser.add_argument('--model'); parser.add_argument('--kind'); parser.add_argument('--type',default='agent',choices=('agent','machine','wait')); parser.add_argument('--seconds',type=float); parser.add_argument('--basis',default=''); parser.add_argument('--depends-on',action='append',default=[]); parser.add_argument('--reason',default='')
         if action=='scope': parser.add_argument('--add-json'); parser.add_argument('--remove'); parser.add_argument('--reason',required=True)
         if action=='sync': parser.add_argument('--ledger',default=str(paths.vigil_ledger()))
         parser.set_defaults(handler=cmd_plan)
